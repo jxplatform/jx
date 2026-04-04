@@ -1,0 +1,146 @@
+{
+  "$schema": "https://declarative-dom.org/schema/v1",
+  "$id": "DynamicList",
+  "$handlers": "./dynamic-list.js",
+
+  "$defs": {
+    "$items": {
+      "$prototype": "LocalStorage",
+      "key": "ddom-list-items",
+      "default": ["Apples", "Bananas", "Cherries"],
+      "signal": true,
+      "description": "List items persisted in localStorage"
+    },
+    "$newText": {
+      "type": "string",
+      "default": "",
+      "signal": true,
+      "description": "Value of the add-item input field"
+    },
+    "$itemCount": {
+      "$compute": "$count($items)",
+      "$deps": ["#/$defs/$items"],
+      "type": "integer",
+      "signal": true,
+      "description": "Number of items in the list"
+    },
+
+    "addItem":    { "$handler": true },
+    "removeItem": { "$handler": true },
+    "updateText": { "$handler": true }
+  },
+
+  "tagName": "dynamic-list",
+  "style": {
+    "display": "block",
+    "maxWidth": "520px",
+    "margin": "2rem auto",
+    "fontFamily": "system-ui, sans-serif"
+  },
+
+  "children": [
+    {
+      "tagName": "h2",
+      "textContent": "My List",
+      "style": { "margin": "0 0 0.25em", "color": "#333" }
+    },
+    {
+      "tagName": "p",
+      "textContent": { "$ref": "#/$defs/$itemCount" },
+      "style": { "margin": "0 0 1.5em", "color": "#6c757d", "fontSize": "0.875em" }
+    },
+
+    {
+      "tagName": "div",
+      "style": {
+        "display": "flex",
+        "gap": "0.5em",
+        "marginBottom": "1.5em"
+      },
+      "children": [
+        {
+          "tagName": "input",
+          "value": { "$ref": "#/$defs/$newText" },
+          "oninput": { "$ref": "#/$defs/updateText" },
+          "attributes": {
+            "type": "text",
+            "placeholder": "Add a new item…"
+          },
+          "style": {
+            "flex": "1",
+            "padding": "0.6em 0.75em",
+            "fontSize": "1em",
+            "border": "1.5px solid #ced4da",
+            "borderRadius": "5px",
+            "outline": "none",
+            ":focus": { "borderColor": "#007bff" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Add",
+          "onclick": { "$ref": "#/$defs/addItem" },
+          "style": {
+            "padding": "0.6em 1.25em",
+            "fontSize": "1em",
+            "backgroundColor": "#28a745",
+            "color": "white",
+            "border": "none",
+            "borderRadius": "5px",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#218838" }
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "ul",
+      "style": { "listStyle": "none", "padding": "0", "margin": "0" },
+      "children": {
+        "$prototype": "Array",
+        "items": { "$ref": "#/$defs/$items" },
+        "map": {
+          "tagName": "li",
+          "$item":        { "$ref": "$map/item" },
+          "$itemIndex":   { "$ref": "$map/index" },
+          "$removeItem":  { "$ref": "#/$defs/removeItem" },
+          "style": {
+            "display": "flex",
+            "justifyContent": "space-between",
+            "alignItems": "center",
+            "padding": "0.65em 0.75em",
+            "margin": "0.4em 0",
+            "backgroundColor": "#f8f9fa",
+            "border": "1px solid #dee2e6",
+            "borderRadius": "5px",
+            ":hover": { "backgroundColor": "#e9ecef" }
+          },
+          "children": [
+            {
+              "tagName": "span",
+              "textContent": { "$ref": "$map/item" },
+              "style": { "flex": "1", "color": "#333" }
+            },
+            {
+              "tagName": "button",
+              "textContent": "✕",
+              "onclick": { "$ref": "#/$defs/removeItem" },
+              "style": {
+                "marginLeft": "0.75em",
+                "padding": "0.2em 0.55em",
+                "fontSize": "0.85em",
+                "backgroundColor": "transparent",
+                "border": "1px solid #dc3545",
+                "borderRadius": "3px",
+                "color": "#dc3545",
+                "cursor": "pointer",
+                ":hover": { "backgroundColor": "#dc3545", "color": "white" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

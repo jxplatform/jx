@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DDOM — Computed Signals Example</title>
+  <style>
+    body {
+      background: #f8f9fa;
+      font-family: system-ui, sans-serif;
+      padding: 2em;
+      margin: 0;
+    }
+    h1 { text-align: center; color: #333; }
+    p.desc { text-align: center; color: #666; max-width: 540px; margin: 0 auto 2em; }
+  </style>
+</head>
+<body>
+  <h1>Computed Signals</h1>
+  <p class="desc">
+    $fullName, $displayTitle, and $scoreLabel are <strong>computed signals</strong>
+    using JSONata expressions declared in user-card.json.
+    They update automatically when their $deps change — zero handler code required.
+  </p>
+  <div id="app"></div>
+  <script type="module">
+    import { DDOM } from '../../ddom.js';
+    await DDOM('./user-card.json', document.getElementById('app'));
+  </script>
+</body>
+</html>

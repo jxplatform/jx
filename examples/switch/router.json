@@ -1,0 +1,139 @@
+{
+  "$schema": "https://declarative-dom.org/schema/v1",
+  "$id": "RouterDemo",
+  "$handlers": "./router.js",
+
+  "$defs": {
+    "$currentRoute": {
+      "type": "string",
+      "default": "home",
+      "signal": true,
+      "description": "Active route key. Drives the $switch below."
+    },
+    "navigate": { "$handler": true, "description": "Set $currentRoute to the given route key" }
+  },
+
+  "tagName": "router-demo",
+  "style": {
+    "display": "block",
+    "maxWidth": "600px",
+    "margin": "2rem auto",
+    "fontFamily": "system-ui, sans-serif"
+  },
+
+  "children": [
+    {
+      "tagName": "nav",
+      "style": {
+        "display": "flex",
+        "gap": "0.5em",
+        "borderBottom": "2px solid #dee2e6",
+        "marginBottom": "1.5em",
+        "paddingBottom": "0.5em"
+      },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "Home",
+          "onclick": { "$ref": "#/$defs/navigate" },
+          "attributes": { "data-route": "home" },
+          "style": {
+            "padding": "0.4em 1em",
+            "border": "none",
+            "borderRadius": "4px",
+            "backgroundColor": "#007bff",
+            "color": "white",
+            "cursor": "pointer",
+            "fontSize": "0.9em",
+            ":hover": { "opacity": "0.9" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "About",
+          "onclick": { "$ref": "#/$defs/navigate" },
+          "attributes": { "data-route": "about" },
+          "style": {
+            "padding": "0.4em 1em",
+            "border": "1px solid #dee2e6",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "color": "#333",
+            "cursor": "pointer",
+            "fontSize": "0.9em",
+            ":hover": { "backgroundColor": "#f8f9fa" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Contact",
+          "onclick": { "$ref": "#/$defs/navigate" },
+          "attributes": { "data-route": "contact" },
+          "style": {
+            "padding": "0.4em 1em",
+            "border": "1px solid #dee2e6",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "color": "#333",
+            "cursor": "pointer",
+            "fontSize": "0.9em",
+            ":hover": { "backgroundColor": "#f8f9fa" }
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "main",
+      "children": [
+        {
+          "tagName": "div",
+          "$switch": { "$ref": "#/$defs/$currentRoute" },
+          "cases": {
+            "home": {
+              "tagName": "section",
+              "children": [
+                { "tagName": "h2", "textContent": "Welcome Home",
+                  "style": { "margin": "0 0 0.75em", "color": "#333" } },
+                { "tagName": "p", "textContent": "This is the home view, rendered by a $switch node that reacts to the $currentRoute signal.",
+                  "style": { "color": "#555", "lineHeight": "1.6" } },
+                { "tagName": "p", "textContent": "Switch the active route using the nav buttons above. The $switch replaces the DOM subtree instantly — no page load.",
+                  "style": { "color": "#555", "lineHeight": "1.6" } }
+              ]
+            },
+            "about": {
+              "tagName": "section",
+              "children": [
+                { "tagName": "h2", "textContent": "About DDOM",
+                  "style": { "margin": "0 0 0.75em", "color": "#333" } },
+                { "tagName": "p", "textContent": "DDOM is a schema and runtime for building reactive web applications using plain JSON.",
+                  "style": { "color": "#555", "lineHeight": "1.6" } },
+                { "tagName": "ul",
+                  "style": { "color": "#555", "lineHeight": "2" },
+                  "children": [
+                    { "tagName": "li", "textContent": "JSON is the authoritative format" },
+                    { "tagName": "li", "textContent": "TC39 Signals provide reactivity" },
+                    { "tagName": "li", "textContent": "JS sidecars carry behavior only" },
+                    { "tagName": "li", "textContent": "JSON Schema validates documents" }
+                  ]
+                }
+              ]
+            },
+            "contact": {
+              "tagName": "section",
+              "children": [
+                { "tagName": "h2", "textContent": "Contact",
+                  "style": { "margin": "0 0 0.75em", "color": "#333" } },
+                { "tagName": "p", "textContent": "This view was swapped in declaratively — the $switch node evaluated $currentRoute === 'contact' and rendered this case.",
+                  "style": { "color": "#555", "lineHeight": "1.6" } },
+                { "tagName": "p",
+                  "style": { "color": "#6c757d", "fontSize": "0.875em" },
+                  "textContent": "All cases are statically known at build time, enabling the compiler to pre-bundle every route." }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

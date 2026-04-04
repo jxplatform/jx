@@ -1,0 +1,113 @@
+{
+  "$schema": "https://declarative-dom.org/schema/v1",
+  "$id": "Counter",
+  "$handlers": "./counter.js",
+
+  "$defs": {
+    "$count": {
+      "type": "integer",
+      "default": 0,
+      "signal": true,
+      "description": "Current counter value"
+    },
+    "$label": {
+      "$compute": "$count > 0 ? 'Clicked ' & $string($count) & ' time' & ($count = 1 ? '' : 's') : 'Click me!'",
+      "$deps": ["#/$defs/$count"],
+      "signal": true,
+      "type": "string",
+      "description": "Dynamic button label derived from $count"
+    },
+    "increment": { "$handler": true, "description": "Increase count by 1" },
+    "decrement": { "$handler": true, "description": "Decrease count by 1" },
+    "reset":     { "$handler": true, "description": "Reset count to 0" }
+  },
+
+  "tagName": "my-counter",
+  "style": {
+    "display": "block",
+    "fontFamily": "system-ui, sans-serif",
+    "maxWidth": "300px",
+    "margin": "2rem auto",
+    "padding": "2rem",
+    "textAlign": "center",
+    "border": "1px solid #ddd",
+    "borderRadius": "8px",
+    "boxShadow": "0 2px 8px rgba(0,0,0,0.08)"
+  },
+
+  "children": [
+    {
+      "tagName": "h1",
+      "textContent": { "$ref": "#/$defs/$label" },
+      "style": {
+        "fontSize": "1.5rem",
+        "marginBottom": "0.5rem",
+        "color": "#333"
+      }
+    },
+    {
+      "tagName": "p",
+      "textContent": { "$ref": "#/$defs/$count" },
+      "style": {
+        "fontSize": "3rem",
+        "fontWeight": "bold",
+        "color": "#007bff",
+        "margin": "1rem 0"
+      }
+    },
+    {
+      "tagName": "div",
+      "style": {
+        "display": "flex",
+        "gap": "0.5rem",
+        "justifyContent": "center"
+      },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "−",
+          "onclick": { "$ref": "#/$defs/decrement" },
+          "style": {
+            "padding": "0.5rem 1.25rem",
+            "fontSize": "1.25rem",
+            "border": "1px solid #adb5bd",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#f8f9fa" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "+",
+          "onclick": { "$ref": "#/$defs/increment" },
+          "style": {
+            "padding": "0.5rem 1.25rem",
+            "fontSize": "1.25rem",
+            "border": "none",
+            "borderRadius": "4px",
+            "backgroundColor": "#007bff",
+            "color": "white",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#0056b3" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Reset",
+          "onclick": { "$ref": "#/$defs/reset" },
+          "style": {
+            "padding": "0.5rem 1rem",
+            "fontSize": "0.9rem",
+            "border": "1px solid #6c757d",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "color": "#6c757d",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#f8f9fa" }
+          }
+        }
+      ]
+    }
+  ]
+}

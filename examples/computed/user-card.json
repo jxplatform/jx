@@ -1,0 +1,192 @@
+{
+  "$schema": "https://declarative-dom.org/schema/v1",
+  "$id": "UserCard",
+  "$handlers": "./user-card.js",
+
+  "$defs": {
+    "$firstName": { "type": "string",  "default": "John",  "signal": true },
+    "$lastName":  { "type": "string",  "default": "Doe",   "signal": true },
+    "$score":     { "type": "integer", "default": 85,      "signal": true },
+    "$level":     { "type": "integer", "default": 1,       "signal": true },
+
+    "$fullName": {
+      "$compute": "$firstName & ' ' & $lastName",
+      "$deps":    ["#/$defs/$firstName", "#/$defs/$lastName"],
+      "type":     "string",
+      "signal":   true,
+      "description": "Concatenated full name"
+    },
+    "$displayTitle": {
+      "$compute": "$score >= 90 ? 'Expert' : $score >= 70 ? 'Advanced' : $score >= 50 ? 'Intermediate' : 'Beginner'",
+      "$deps":    ["#/$defs/$score"],
+      "type":     "string",
+      "signal":   true,
+      "description": "Skill level label derived from score"
+    },
+    "$scoreLabel": {
+      "$compute": "$string($score) & '%'",
+      "$deps":    ["#/$defs/$score"],
+      "type":     "string",
+      "signal":   true,
+      "description": "Score formatted as a percentage string"
+    },
+
+    "addScore":    { "$handler": true },
+    "subtractScore": { "$handler": true },
+    "changeName":  { "$handler": true }
+  },
+
+  "tagName": "user-card",
+  "style": {
+    "display": "block",
+    "maxWidth": "400px",
+    "margin": "1em auto",
+    "padding": "1.5em",
+    "border": "1px solid #ddd",
+    "borderRadius": "8px",
+    "backgroundColor": "white",
+    "boxShadow": "0 2px 4px rgba(0,0,0,0.1)",
+    "fontFamily": "system-ui, sans-serif"
+  },
+
+  "children": [
+    {
+      "tagName": "div",
+      "style": {
+        "display": "flex",
+        "alignItems": "center",
+        "gap": "1em",
+        "marginBottom": "1.25em"
+      },
+      "children": [
+        {
+          "tagName": "div",
+          "style": {
+            "width": "56px",
+            "height": "56px",
+            "borderRadius": "50%",
+            "backgroundColor": "#007bff",
+            "color": "white",
+            "display": "flex",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "fontWeight": "bold",
+            "fontSize": "1.25rem",
+            "flexShrink": "0"
+          },
+          "textContent": { "$ref": "#/$defs/$level" }
+        },
+        {
+          "tagName": "div",
+          "children": [
+            {
+              "tagName": "h3",
+              "textContent": { "$ref": "#/$defs/$fullName" },
+              "style": { "margin": "0 0 0.25em", "fontSize": "1.15em", "color": "#222" }
+            },
+            {
+              "tagName": "span",
+              "textContent": { "$ref": "#/$defs/$displayTitle" },
+              "style": { "fontSize": "0.875em", "color": "#007bff", "fontWeight": "500" }
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "tagName": "div",
+      "style": { "marginBottom": "1.25em" },
+      "children": [
+        {
+          "tagName": "div",
+          "style": {
+            "display": "flex",
+            "justifyContent": "space-between",
+            "marginBottom": "0.5em",
+            "fontSize": "0.875em",
+            "color": "#666"
+          },
+          "children": [
+            { "tagName": "span", "textContent": "Score" },
+            { "tagName": "span", "textContent": { "$ref": "#/$defs/$scoreLabel" } }
+          ]
+        },
+        {
+          "tagName": "div",
+          "style": {
+            "height": "8px",
+            "backgroundColor": "#e9ecef",
+            "borderRadius": "4px",
+            "overflow": "hidden"
+          },
+          "children": [
+            {
+              "tagName": "div",
+              "style": {
+                "height": "100%",
+                "backgroundColor": "#007bff",
+                "transition": "width 0.3s ease"
+              },
+              "attributes": {
+                "style": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "tagName": "div",
+      "style": { "display": "flex", "gap": "0.5em", "flexWrap": "wrap" },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "+10 Score",
+          "onclick": { "$ref": "#/$defs/addScore" },
+          "style": {
+            "padding": "0.4em 0.9em",
+            "backgroundColor": "#28a745",
+            "color": "white",
+            "border": "none",
+            "borderRadius": "4px",
+            "cursor": "pointer",
+            "fontSize": "0.875em",
+            ":hover": { "backgroundColor": "#218838" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "−10 Score",
+          "onclick": { "$ref": "#/$defs/subtractScore" },
+          "style": {
+            "padding": "0.4em 0.9em",
+            "backgroundColor": "#dc3545",
+            "color": "white",
+            "border": "none",
+            "borderRadius": "4px",
+            "cursor": "pointer",
+            "fontSize": "0.875em",
+            ":hover": { "backgroundColor": "#c82333" }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Change Name",
+          "onclick": { "$ref": "#/$defs/changeName" },
+          "style": {
+            "padding": "0.4em 0.9em",
+            "border": "1px solid #007bff",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "color": "#007bff",
+            "cursor": "pointer",
+            "fontSize": "0.875em",
+            ":hover": { "backgroundColor": "#f0f7ff" }
+          }
+        }
+      ]
+    }
+  ]
+}

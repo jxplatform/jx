@@ -1,0 +1,169 @@
+{
+  "$schema": "https://declarative-dom.org/schema/v1",
+  "$id": "FetchDemo",
+  "$handlers": "./fetch-demo.js",
+
+  "$defs": {
+    "$userId": {
+      "type": "integer",
+      "default": 1,
+      "signal": true,
+      "description": "Currently selected user ID (drives reactive fetch)"
+    },
+
+    "$user": {
+      "$prototype": "Request",
+      "url": "https://jsonplaceholder.typicode.com/users/1",
+      "method": "GET",
+      "timing": "client",
+      "signal": true,
+      "description": "Reactive user fetch — re-fetches when URL changes"
+    },
+
+    "$posts": {
+      "$prototype": "Request",
+      "url": "https://jsonplaceholder.typicode.com/posts?userId=1",
+      "method": "GET",
+      "timing": "client",
+      "signal": true,
+      "description": "Posts for the selected user"
+    },
+
+    "$userLabel": {
+      "$compute": "$userId > 0 ? 'User #' & $string($userId) : 'Select a user'",
+      "$deps": ["#/$defs/$userId"],
+      "type": "string",
+      "signal": true
+    },
+
+    "prevUser": { "$handler": true },
+    "nextUser": { "$handler": true }
+  },
+
+  "tagName": "fetch-demo",
+  "style": {
+    "display": "block",
+    "maxWidth": "640px",
+    "margin": "2rem auto",
+    "fontFamily": "system-ui, sans-serif"
+  },
+
+  "children": [
+    {
+      "tagName": "h2",
+      "textContent": "Declarative Fetch",
+      "style": { "margin": "0 0 0.25em", "color": "#333" }
+    },
+    {
+      "tagName": "p",
+      "textContent": "Request prototypes auto-fetch when declared. Switch users to see reactive re-fetch.",
+      "style": { "color": "#6c757d", "marginBottom": "1.5em", "fontSize": "0.9em" }
+    },
+
+    {
+      "tagName": "div",
+      "style": {
+        "display": "flex",
+        "alignItems": "center",
+        "gap": "0.75em",
+        "marginBottom": "1.5em"
+      },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "← Prev",
+          "onclick": { "$ref": "#/$defs/prevUser" },
+          "style": {
+            "padding": "0.4em 0.9em",
+            "border": "1px solid #adb5bd",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#f8f9fa" }
+          }
+        },
+        {
+          "tagName": "strong",
+          "textContent": { "$ref": "#/$defs/$userLabel" },
+          "style": { "minWidth": "7em", "textAlign": "center" }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Next →",
+          "onclick": { "$ref": "#/$defs/nextUser" },
+          "style": {
+            "padding": "0.4em 0.9em",
+            "border": "none",
+            "borderRadius": "4px",
+            "backgroundColor": "#007bff",
+            "color": "white",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#0056b3" }
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "div",
+      "style": {
+        "backgroundColor": "white",
+        "border": "1px solid #dee2e6",
+        "borderRadius": "8px",
+        "padding": "1.25em",
+        "marginBottom": "1.5em"
+      },
+      "children": [
+        {
+          "tagName": "h3",
+          "textContent": "User Profile",
+          "style": { "margin": "0 0 0.75em", "color": "#495057", "fontSize": "1em", "textTransform": "uppercase", "letterSpacing": "0.05em" }
+        },
+        {
+          "tagName": "pre",
+          "textContent": { "$ref": "#/$defs/$user" },
+          "style": {
+            "margin": "0",
+            "padding": "0.75em",
+            "backgroundColor": "#f8f9fa",
+            "borderRadius": "4px",
+            "fontSize": "0.8em",
+            "overflow": "auto",
+            "color": "#333"
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "div",
+      "style": {
+        "backgroundColor": "white",
+        "border": "1px solid #dee2e6",
+        "borderRadius": "8px",
+        "padding": "1.25em"
+      },
+      "children": [
+        {
+          "tagName": "h3",
+          "textContent": "Posts",
+          "style": { "margin": "0 0 0.75em", "color": "#495057", "fontSize": "1em", "textTransform": "uppercase", "letterSpacing": "0.05em" }
+        },
+        {
+          "tagName": "pre",
+          "textContent": { "$ref": "#/$defs/$posts" },
+          "style": {
+            "margin": "0",
+            "padding": "0.75em",
+            "backgroundColor": "#f8f9fa",
+            "borderRadius": "4px",
+            "fontSize": "0.8em",
+            "overflow": "auto",
+            "maxHeight": "300px",
+            "color": "#333"
+          }
+        }
+      ]
+    }
+  ]
+}
