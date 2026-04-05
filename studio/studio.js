@@ -25,6 +25,8 @@ import {
   extractInstruction,
 } from '@atlaskit/pragmatic-drag-and-drop-hitbox/tree-item';
 
+import webdata from './webdata.json';
+
 // ─── Globals ──────────────────────────────────────────────────────────────────
 
 let S; // current state
@@ -61,6 +63,29 @@ canvasDropLine.style.display = 'none';
 const VOID_ELEMENTS = new Set([
   'area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr',
 ]);
+
+// ─── Webdata: datalists for autocomplete ──────────────────────────────────────
+
+const tagNameList = document.createElement('datalist');
+tagNameList.id = 'tag-names';
+for (const tag of webdata.allTags) {
+  const opt = document.createElement('option');
+  opt.value = tag;
+  tagNameList.appendChild(opt);
+}
+document.body.appendChild(tagNameList);
+
+const cssPropList = document.createElement('datalist');
+cssPropList.id = 'css-props';
+for (const [name] of webdata.cssProps) {
+  const opt = document.createElement('option');
+  opt.value = name;
+  cssPropList.appendChild(opt);
+}
+document.body.appendChild(cssPropList);
+
+/** Map<camelCaseName, initialValue> for placeholder hints */
+const cssInitialMap = new Map(webdata.cssProps);
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -732,65 +757,115 @@ function applyDropInstruction(instruction, srcData, targetPath) {
   }
 }
 
-function renderBlocks(container) {
-  const blocks = [
-    { label: 'div', def: { tagName: 'div' } },
-    { label: 'section', def: { tagName: 'section' } },
-    { label: 'header', def: { tagName: 'header' } },
-    { label: 'footer', def: { tagName: 'footer' } },
-    { label: 'nav', def: { tagName: 'nav' } },
-    { label: 'h1', def: { tagName: 'h1', textContent: 'Heading' } },
-    { label: 'h2', def: { tagName: 'h2', textContent: 'Heading' } },
-    { label: 'h3', def: { tagName: 'h3', textContent: 'Heading' } },
-    { label: 'p', def: { tagName: 'p', textContent: 'Paragraph text' } },
-    { label: 'span', def: { tagName: 'span', textContent: 'Inline text' } },
-    { label: 'button', def: { tagName: 'button', textContent: 'Button' } },
-    { label: 'input', def: { tagName: 'input', attributes: { type: 'text', placeholder: 'Enter text...' } } },
-    { label: 'textarea', def: { tagName: 'textarea' } },
-    { label: 'select', def: { tagName: 'select', children: [{ tagName: 'option', textContent: 'Option 1' }] } },
-    { label: 'form', def: { tagName: 'form' } },
-    { label: 'img', def: { tagName: 'img', attributes: { src: '', alt: 'Image' } } },
-    { label: 'a', def: { tagName: 'a', textContent: 'Link', attributes: { href: '#' } } },
-    { label: 'ul', def: { tagName: 'ul', children: [{ tagName: 'li', textContent: 'Item' }] } },
-    { label: 'ol', def: { tagName: 'ol', children: [{ tagName: 'li', textContent: 'Item' }] } },
-    { label: 'table', def: { tagName: 'table', children: [
-      { tagName: 'thead', children: [{ tagName: 'tr', children: [{ tagName: 'th', textContent: 'Header' }] }] },
-      { tagName: 'tbody', children: [{ tagName: 'tr', children: [{ tagName: 'td', textContent: 'Cell' }] }] },
-    ] } },
+/** Generate a sensible default JSONsx node for a given tag name */
+function defaultDef(tag) {
+  const def = { tagName: tag };
+  if (/^h[1-6]$/.test(tag)) def.textContent = 'Heading';
+  else if (tag === 'p') def.textContent = 'Paragraph text';
+  else if (tag === 'span' || tag === 'strong' || tag === 'em' || tag === 'small'
+    || tag === 'mark' || tag === 'code' || tag === 'abbr' || tag === 'q'
+    || tag === 'sub' || tag === 'sup' || tag === 'time') def.textContent = 'Text';
+  else if (tag === 'a') { def.textContent = 'Link'; def.attributes = { href: '#' }; }
+  else if (tag === 'button') def.textContent = 'Button';
+  else if (tag === 'label') def.textContent = 'Label';
+  else if (tag === 'legend') def.textContent = 'Legend';
+  else if (tag === 'caption') def.textContent = 'Caption';
+  else if (tag === 'summary') def.textContent = 'Summary';
+  else if (tag === 'li' || tag === 'dt' || tag === 'dd' || tag === 'th' || tag === 'td'
+    || tag === 'option') def.textContent = 'Item';
+  else if (tag === 'blockquote') def.textContent = 'Quote';
+  else if (tag === 'pre') def.textContent = 'Preformatted text';
+  else if (tag === 'input') def.attributes = { type: 'text', placeholder: 'Enter text...' };
+  else if (tag === 'img') def.attributes = { src: '', alt: 'Image' };
+  else if (tag === 'iframe') def.attributes = { src: '' };
+  else if (tag === 'select') def.children = [{ tagName: 'option', textContent: 'Option 1' }];
+  else if (tag === 'ul' || tag === 'ol') def.children = [{ tagName: 'li', textContent: 'Item' }];
+  else if (tag === 'dl') def.children = [
+    { tagName: 'dt', textContent: 'Term' },
+    { tagName: 'dd', textContent: 'Definition' },
   ];
+  else if (tag === 'table') def.children = [
+    { tagName: 'thead', children: [{ tagName: 'tr', children: [{ tagName: 'th', textContent: 'Header' }] }] },
+    { tagName: 'tbody', children: [{ tagName: 'tr', children: [{ tagName: 'td', textContent: 'Cell' }] }] },
+  ];
+  else if (tag === 'details') def.children = [
+    { tagName: 'summary', textContent: 'Summary' },
+    { tagName: 'p', textContent: 'Detail content' },
+  ];
+  return def;
+}
 
-  for (const { label, def } of blocks) {
-    const row = document.createElement('div');
-    row.className = 'layer-row block-row';
+function renderBlocks(container) {
+  // Search filter
+  const search = document.createElement('input');
+  search.className = 'field-input blocks-search';
+  search.placeholder = 'Filter elements…';
+  container.appendChild(search);
 
-    const badge = document.createElement('span');
-    badge.className = 'layer-tag';
-    badge.textContent = label;
-    row.appendChild(badge);
+  const list = document.createElement('div');
+  container.appendChild(list);
 
-    const lbl = document.createElement('span');
-    lbl.className = 'layer-label';
-    lbl.textContent = label;
-    row.appendChild(lbl);
+  /** Collapsed category state (persists across re-renders via closure) */
+  const collapsed = new Set();
 
-    // Click to insert at selection
-    row.onclick = () => {
-      const parentPath = S.selection || [];
-      const parent = getNodeAtPath(S.document, parentPath);
-      const idx = parent?.children ? parent.children.length : 0;
-      update(insertNode(S, parentPath, idx, structuredClone(def)));
-    };
+  function renderList(filter) {
+    list.innerHTML = '';
 
-    // Also register as draggable for DnD into the layer tree
-    const blockDef = def;
-    const cleanup = draggable({
-      element: row,
-      getInitialData() { return { type: 'block', fragment: structuredClone(blockDef) }; },
-    });
-    dndCleanups.push(cleanup);
+    for (const [category, elements] of Object.entries(webdata.elements)) {
+      const filtered = filter
+        ? elements.filter(e => e.tag.includes(filter))
+        : elements;
+      if (filtered.length === 0) continue;
 
-    container.appendChild(row);
+      // Category header
+      const header = document.createElement('div');
+      header.className = `blocks-category${collapsed.has(category) ? ' collapsed' : ''}`;
+      header.textContent = category;
+      header.onclick = () => {
+        if (collapsed.has(category)) collapsed.delete(category);
+        else collapsed.add(category);
+        renderList(search.value.toLowerCase());
+      };
+      list.appendChild(header);
+
+      if (collapsed.has(category)) continue;
+
+      for (const { tag } of filtered) {
+        const def = defaultDef(tag);
+        const row = document.createElement('div');
+        row.className = 'layer-row block-row';
+
+        const badge = document.createElement('span');
+        badge.className = 'layer-tag';
+        badge.textContent = tag;
+        row.appendChild(badge);
+
+        const lbl = document.createElement('span');
+        lbl.className = 'layer-label';
+        lbl.textContent = tag;
+        row.appendChild(lbl);
+
+        row.onclick = () => {
+          const parentPath = S.selection || [];
+          const parent = getNodeAtPath(S.document, parentPath);
+          const idx = parent?.children ? parent.children.length : 0;
+          update(insertNode(S, parentPath, idx, structuredClone(def)));
+        };
+
+        const blockDef = def;
+        const cleanup = draggable({
+          element: row,
+          getInitialData() { return { type: 'block', fragment: structuredClone(blockDef) }; },
+        });
+        dndCleanups.push(cleanup);
+
+        list.appendChild(row);
+      }
+    }
   }
+
+  search.oninput = () => renderList(search.value.toLowerCase());
+  renderList('');
 }
 
 // ─── Right panel: Inspector ───────────────────────────────────────────────────
@@ -840,7 +915,7 @@ function renderInspector(container) {
 
     fields.appendChild(fieldRow('tagName', 'text', node.tagName || 'div', (v) => {
       update(updateProperty(S, S.selection, 'tagName', v || undefined));
-    }));
+    }, 'tag-names'));
     fields.appendChild(fieldRow('$id', 'text', node.$id || '', (v) => {
       update(updateProperty(S, S.selection, '$id', v || undefined));
     }));
@@ -884,7 +959,8 @@ function renderInspector(container) {
             update(updateStyle(S, S.selection, prop, newVal));
           }
         },
-        () => update(updateStyle(S, S.selection, prop, undefined))
+        () => update(updateStyle(S, S.selection, prop, undefined)),
+        'css-props'
       ));
     }
 
@@ -985,7 +1061,7 @@ function renderInspectorSection(container, title, defaultOpen, contentFn) {
 }
 
 /** Single property input row */
-function fieldRow(label, type, value, onChange) {
+function fieldRow(label, type, value, onChange, datalistId) {
   const row = document.createElement('div');
   row.className = 'field-row';
 
@@ -1015,6 +1091,7 @@ function fieldRow(label, type, value, onChange) {
     input.className = 'field-input';
     input.type = type;
     input.value = value;
+    if (datalistId) input.setAttribute('list', datalistId);
     let debounceTimer;
     input.oninput = () => {
       clearTimeout(debounceTimer);
@@ -1026,17 +1103,25 @@ function fieldRow(label, type, value, onChange) {
 }
 
 /** Key-value pair row for styles / attributes */
-function kvRow(key, value, onChange, onDelete) {
+function kvRow(key, value, onChange, onDelete, datalistId) {
   const row = document.createElement('div');
   row.className = 'kv-row';
 
   const keyInput = document.createElement('input');
   keyInput.className = 'field-input kv-key';
   keyInput.value = key;
+  if (datalistId) keyInput.setAttribute('list', datalistId);
 
   const valInput = document.createElement('input');
   valInput.className = 'field-input kv-val';
   valInput.value = value;
+  // Show CSS initial value as placeholder hint
+  if (datalistId === 'css-props') {
+    valInput.placeholder = cssInitialMap.get(key) || '';
+    keyInput.addEventListener('change', () => {
+      valInput.placeholder = cssInitialMap.get(keyInput.value) || '';
+    });
+  }
 
   let debounceTimer;
   const commit = () => {

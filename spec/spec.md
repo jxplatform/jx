@@ -408,6 +408,50 @@ Inline properties are applied directly to the element. Nested rules are emitted 
 
 The compiler extracts all static `style` definitions into a single `<style>` block in the document `<head>`, eliminating per-element style tags at build time.
 
+### 8.4 Named Media Breakpoints (`$media`)
+
+Named breakpoints may be declared at the root document level using `$media`, following the [CSS Media Queries Level 4 `@custom-media` convention](https://www.w3.org/TR/mediaqueries-5/#custom-mq). Names use the CSS custom property `--` prefix:
+
+```json
+{
+  "$media": {
+    "--sm":   "(min-width: 640px)",
+    "--md":   "(min-width: 768px)",
+    "--lg":   "(min-width: 1024px)",
+    "--dark": "(prefers-color-scheme: dark)"
+  }
+}
+```
+
+Within any `style` object, keys beginning with `@--` reference a named breakpoint. Keys beginning with `@` followed by a parenthesized condition are treated as literal media queries:
+
+```json
+{
+  "style": {
+    "fontSize": "14px",
+    "@--md": {
+      "fontSize": "16px"
+    },
+    "@--dark": {
+      "color": "#ccc"
+    },
+    "@(min-width: 1280px)": {
+      "fontSize": "18px"
+    }
+  }
+}
+```
+
+The runtime resolves `@--name` to its registered condition string at render time, emitting a scoped `@media` rule:
+
+```css
+@media (min-width: 768px) { [data-jsonsx="abc12"] { font-size: 16px; } }
+@media (prefers-color-scheme: dark) { [data-jsonsx="abc12"] { color: #ccc; } }
+@media (min-width: 1280px) { [data-jsonsx="abc12"] { font-size: 18px; } }
+```
+
+`$media` declarations propagate through the component scope, so all descendant elements of a component share its named breakpoints without re-declaring them. If a child component declares its own `$media`, its definitions take precedence for that subtree.
+
 ---
 
 ## 9. Event Handlers
@@ -868,6 +912,7 @@ The following keys have special meaning in JSONsx and may not be used as element
 | `$deps` | Dependency list for computed signals |
 | `$switch` | Dynamic component switching |
 | `$map` | Iteration context namespace (read-only) |
+| `$media` | Named media breakpoint declarations (root-level) |
 | `signal` | Marks a `$defs` entry as reactive |
 | `timing` | Execution timing for `Request` prototype (`"server"` \| `"client"`) |
 | `default` | Initial value for a signal |
@@ -895,6 +940,10 @@ Custom elements defined in JSONsx follow the Web Components specification. `tagN
 ### 19.5 CSSOM
 
 Style object property names follow the CSS Object Model camelCase convention (`backgroundColor`, `marginTop`, etc.), identical to the `element.style` API.
+
+### 19.8 CSS Media Queries Level 4
+
+`$media` breakpoint names follow the [`@custom-media` convention](https://www.w3.org/TR/mediaqueries-5/#custom-mq) from the CSS Media Queries Level 4 Working Draft: names use the `--` prefix and values are parenthesized media conditions. The runtime resolves named queries at render time, emitting standard `@media` rules, providing full cross-browser support without requiring native `@custom-media` support.
 
 ### 19.6 ECMAScript Modules
 

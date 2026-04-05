@@ -70,6 +70,11 @@
     .layer-delete { visibility: hidden; cursor: pointer; color: var(--danger); font-size: 11px; flex-shrink: 0; }
     .layer-row:hover .layer-delete { visibility: visible; }
     .block-row { cursor: grab; }
+    .blocks-search { margin: 4px 8px; width: calc(100% - 16px); }
+    .blocks-category { padding: 6px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); cursor: pointer; user-select: none; border-bottom: 1px solid var(--border); }
+    .blocks-category::before { content: '▼'; margin-right: 6px; font-size: 8px; display: inline-block; transition: transform 0.15s; }
+    .blocks-category.collapsed::before { transform: rotate(-90deg); }
+    .blocks-category:hover { color: var(--fg); }
 
     /* ─── Drop indicator ──────────────────────────── */
     .drop-indicator { display: none; position: absolute; height: 2px; background: var(--accent); z-index: 5; pointer-events: none; }

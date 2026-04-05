@@ -1,0 +1,108 @@
+{
+  "$schema": "https://declarative-dom.org/schema/v1",
+  "$id": "ResponsiveCard",
+  "$media": {
+    "--sm": "(min-width: 640px)",
+    "--md": "(min-width: 768px)",
+    "--lg": "(min-width: 1024px)",
+    "--dark": "(prefers-color-scheme: dark)"
+  },
+  "tagName": "div",
+  "style": {
+    "fontFamily": "system-ui, sans-serif",
+    "padding": "1rem",
+    "maxWidth": "100%",
+    "@--md": {
+      "padding": "2rem",
+      "maxWidth": "720px",
+      "margin": "0 auto"
+    },
+    "@--lg": {
+      "maxWidth": "960px"
+    }
+  },
+  "children": [
+    {
+      "tagName": "h1",
+      "textContent": "Responsive Card",
+      "style": {
+        "fontSize": "1.25rem",
+        "margin": "0 0 0.5rem",
+        "@--sm": {
+          "fontSize": "1.5rem"
+        },
+        "@--md": {
+          "fontSize": "2rem"
+        }
+      }
+    },
+    {
+      "tagName": "p",
+      "textContent": "Resize the window to see breakpoint-based styles change. Named breakpoints are defined once in $media at the root and referenced by name anywhere in the document.",
+      "style": {
+        "fontSize": "0.875rem",
+        "lineHeight": "1.5",
+        "color": "#555",
+        "@--md": {
+          "fontSize": "1rem"
+        },
+        "@--dark": {
+          "color": "#aaa"
+        }
+      }
+    },
+    {
+      "tagName": "div",
+      "style": {
+        "display": "grid",
+        "gridTemplateColumns": "1fr",
+        "gap": "1rem",
+        "marginTop": "1.5rem",
+        "@--sm": {
+          "gridTemplateColumns": "1fr 1fr"
+        },
+        "@--lg": {
+          "gridTemplateColumns": "1fr 1fr 1fr"
+        }
+      },
+      "children": [
+        {
+          "tagName": "div",
+          "style": {
+            "background": "#f0f0f0",
+            "borderRadius": "8px",
+            "padding": "1rem",
+            "@--dark": {
+              "background": "#222"
+            }
+          },
+          "children": [{ "tagName": "p", "textContent": "Card A" }]
+        },
+        {
+          "tagName": "div",
+          "style": {
+            "background": "#f0f0f0",
+            "borderRadius": "8px",
+            "padding": "1rem",
+            "@--dark": {
+              "background": "#222"
+            }
+          },
+          "children": [{ "tagName": "p", "textContent": "Card B" }]
+        },
+        {
+          "tagName": "div",
+          "style": {
+            "background": "#f0f0f0",
+            "borderRadius": "8px",
+            "padding": "1rem",
+            "@--dark": {
+              "background": "#222"
+            }
+          },
+          "children": [{ "tagName": "p", "textContent": "Card C" }]
+        }
+      ]
+    }
+  ]
+}
