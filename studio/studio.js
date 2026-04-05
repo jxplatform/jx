@@ -3,15 +3,27 @@
  *
  * Phase 1: Open a JSONsx file, render in canvas, edit properties
  * in the inspector, see changes live, and save.
+ * Phase 2: Tree editing with drag-and-drop reordering.
  */
 
 import {
   createState, selectNode, hoverNode, undo, redo,
-  insertNode, removeNode, duplicateNode, updateProperty,
+  insertNode, removeNode, duplicateNode, moveNode, updateProperty,
   updateStyle, updateAttribute, addDef, removeDef,
   getNodeAtPath, flattenTree, nodeLabel, pathKey,
-  pathsEqual, parentElementPath, childIndex,
+  pathsEqual, parentElementPath, childIndex, isAncestor,
 } from './state.js';
+
+import {
+  draggable,
+  dropTargetForElements,
+  monitorForElements,
+} from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+import { combine } from '@atlaskit/pragmatic-drag-and-drop/combine';
+import {
+  attachInstruction,
+  extractInstruction,
+} from '@atlaskit/pragmatic-drag-and-drop-hitbox/tree-item';
 
 // ─── Globals ──────────────────────────────────────────────────────────────────
 
@@ -31,6 +43,24 @@ const statusbar  = $('#statusbar');
 
 /** WeakMap<HTMLElement, Array> — maps rendered DOM elements to their JSON paths */
 const elToPath = new WeakMap();
+
+/** DnD cleanup functions from previous render — called on re-render */
+let dndCleanups = [];
+/** Canvas DnD cleanup functions — separate from layer panel */
+let canvasDndCleanups = [];
+
+/** Cleanup function for the current selection drag registration */
+let selDragCleanup = null;
+
+/** Canvas drop indicator element */
+const canvasDropLine = document.createElement('div');
+canvasDropLine.className = 'canvas-drop-indicator';
+canvasDropLine.style.display = 'none';
+
+/** Void elements that cannot accept children */
+const VOID_ELEMENTS = new Set([
+  'area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr',
+]);
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -79,9 +109,14 @@ function update(newState) {
 // ─── Canvas ───────────────────────────────────────────────────────────────────
 
 function renderCanvas() {
+  // Clean up previous canvas DnD registrations
+  for (const fn of canvasDndCleanups) fn();
+  canvasDndCleanups = [];
+
   canvas.innerHTML = '';
   canvas.style.transform = `scale(${S.ui.zoom})`;
   renderCanvasNode(S.document, [], canvas);
+  registerCanvasDnD();
 }
 
 /**
@@ -134,26 +169,186 @@ function renderCanvasNode(node, path, parent) {
     }
   }
 
-  // Prevent canvas children from receiving pointer events
+  // Prevent canvas children from receiving pointer events (re-enabled during drag)
   el.style.pointerEvents = 'none';
 
   parent.appendChild(el);
   return el;
 }
 
+/** Track the last drag pointer position for canvas drop calculations */
+let lastDragInput = null;
+
+/**
+ * Register all canvas elements as DnD drop targets.
+ * Pointer events are toggled on only during active drags.
+ */
+function registerCanvasDnD() {
+  const allEls = canvas.querySelectorAll('*');
+
+  // Global monitor: enable pointer-events on canvas during drag, disable after
+  const monitorCleanup = monitorForElements({
+    onDragStart() {
+      for (const el of canvas.querySelectorAll('*')) {
+        el.style.pointerEvents = 'auto';
+      }
+      overlayClk.style.pointerEvents = 'none';
+    },
+    onDrag({ location }) {
+      // Track pointer position for all canvas drop targets
+      lastDragInput = location.current.input;
+    },
+    onDrop() {
+      canvasDropLine.style.display = 'none';
+      lastDragInput = null;
+      for (const el of canvas.querySelectorAll('*')) {
+        el.style.pointerEvents = 'none';
+      }
+      overlayClk.style.pointerEvents = '';
+    },
+  });
+  canvasDndCleanups.push(monitorCleanup);
+
+  for (const el of allEls) {
+    const elPath = elToPath.get(el);
+    if (!elPath) continue;
+
+    const node = getNodeAtPath(S.document, elPath);
+    const isVoid = VOID_ELEMENTS.has((node?.tagName || 'div').toLowerCase());
+
+    const cleanup = dropTargetForElements({
+      element: el,
+      canDrop({ source }) {
+        const srcPath = source.data.path;
+        if (srcPath && isAncestor(srcPath, elPath)) return false;
+        return true;
+      },
+      getData({ input, element }) {
+        return { path: elPath, _isVoid: isVoid };
+      },
+      onDragEnter({ self, source }) {
+        showCanvasDropIndicator(el, elPath, isVoid);
+      },
+      onDrag({ self, source }) {
+        showCanvasDropIndicator(el, elPath, isVoid);
+      },
+      onDragLeave() {
+        canvasDropLine.style.display = 'none';
+        el.classList.remove('canvas-drop-target');
+      },
+      onDrop({ self, source }) {
+        canvasDropLine.style.display = 'none';
+        el.classList.remove('canvas-drop-target');
+
+        const instruction = getCanvasDropInstruction(el, elPath, isVoid);
+        if (!instruction) return;
+
+        applyDropInstruction(instruction, source.data, elPath);
+      },
+    });
+    canvasDndCleanups.push(cleanup);
+  }
+}
+
+/**
+ * Determine drop instruction based on pointer position relative to element bounds.
+ * Top 25% = reorder-above, bottom 25% = reorder-below, middle 50% = make-child.
+ */
+function getCanvasDropInstruction(el, elPath, isVoid) {
+  const rect = el.getBoundingClientRect();
+  if (!lastDragInput) return null;
+
+  const y = lastDragInput.clientY;
+  const relY = (y - rect.top) / rect.height;
+
+  // Root element can only accept make-child
+  if (elPath.length === 0) {
+    return { type: 'make-child' };
+  }
+
+  if (isVoid) {
+    return relY < 0.5 ? { type: 'reorder-above' } : { type: 'reorder-below' };
+  }
+
+  if (relY < 0.25) return { type: 'reorder-above' };
+  if (relY > 0.75) return { type: 'reorder-below' };
+  return { type: 'make-child' };
+}
+
+function showCanvasDropIndicator(el, elPath, isVoid) {
+  const instruction = getCanvasDropInstruction(el, elPath, isVoid);
+  if (!instruction) {
+    canvasDropLine.style.display = 'none';
+    return;
+  }
+
+  const zoom = S.ui.zoom;
+  const wrapRect = canvas.parentElement.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+
+  const left = (elRect.left - wrapRect.left + canvas.parentElement.scrollLeft) / zoom;
+  const width = elRect.width / zoom;
+
+  if (instruction.type === 'make-child') {
+    canvasDropLine.style.display = 'block';
+    canvasDropLine.style.top = `${(elRect.top - wrapRect.top + canvas.parentElement.scrollTop) / zoom}px`;
+    canvasDropLine.style.left = `${left}px`;
+    canvasDropLine.style.width = `${width}px`;
+    canvasDropLine.style.height = `${elRect.height / zoom}px`;
+    canvasDropLine.className = 'canvas-drop-indicator inside';
+    el.classList.add('canvas-drop-target');
+    return;
+  }
+
+  el.classList.remove('canvas-drop-target');
+  const top = instruction.type === 'reorder-above'
+    ? (elRect.top - wrapRect.top + canvas.parentElement.scrollTop) / zoom
+    : (elRect.bottom - wrapRect.top + canvas.parentElement.scrollTop) / zoom;
+
+  canvasDropLine.style.display = 'block';
+  canvasDropLine.style.top = `${top}px`;
+  canvasDropLine.style.left = `${left}px`;
+  canvasDropLine.style.width = `${width}px`;
+  canvasDropLine.style.height = '2px';
+  canvasDropLine.className = 'canvas-drop-indicator line';
+}
+
 // ─── Overlay system ───────────────────────────────────────────────────────────
 
 function renderOverlays() {
   overlay.innerHTML = '';
+  // Re-attach canvasDropLine so it survives innerHTML clear
+  overlay.appendChild(canvasDropLine);
 
   if (S.hover && !pathsEqual(S.hover, S.selection)) {
     const el = findCanvasElement(S.hover);
     if (el) drawOverlayBox(el, 'hover');
   }
 
+  // Clean up previous drag registration
+  if (selDragCleanup) { selDragCleanup(); selDragCleanup = null; }
+
   if (S.selection) {
     const el = findCanvasElement(S.selection);
-    if (el) drawOverlayBox(el, 'selection');
+    if (el) {
+      const box = drawOverlayBox(el, 'selection');
+      // Add drag handle inside the label for non-root selections
+      if (S.selection.length >= 2) {
+        const label = box.querySelector('.overlay-label');
+        if (label) {
+          const handle = document.createElement('span');
+          handle.className = 'overlay-drag-handle';
+          handle.textContent = '⠿';
+          label.prepend(handle);
+
+          const path = S.selection;
+          selDragCleanup = draggable({
+            element: handle,
+            getInitialData() { return { type: 'tree-node', path }; },
+          });
+        }
+      }
+    }
   }
 }
 
@@ -178,6 +373,7 @@ function drawOverlayBox(el, type) {
   }
 
   overlay.appendChild(box);
+  return box;
 }
 
 function findCanvasElement(path) {
@@ -198,27 +394,26 @@ function findCanvasElement(path) {
 
 // ─── Canvas click-to-select ───────────────────────────────────────────────────
 
-overlayClk.addEventListener('click', (e) => {
-  const zoom = S.ui.zoom;
-  const canvasRect = canvas.getBoundingClientRect();
-  const x = (e.clientX - canvasRect.left) / zoom;
-  const y = (e.clientY - canvasRect.top) / zoom;
-
-  // Find the deepest element at this point
-  // Temporarily allow pointer events to use elementFromPoint
-  canvas.style.pointerEvents = 'auto';
+/** Temporarily enable pointer events on all canvas elements, run fn, then restore */
+function withCanvasPointerEvents(fn) {
+  const els = canvas.querySelectorAll('*');
+  for (const el of els) el.style.pointerEvents = 'auto';
   overlayClk.style.display = 'none';
-  const elements = document.elementsFromPoint(e.clientX, e.clientY);
+  const result = fn();
   overlayClk.style.display = '';
-  canvas.style.pointerEvents = '';
+  for (const el of els) el.style.pointerEvents = 'none';
+  return result;
+}
 
-  // Find the first element inside the canvas
+overlayClk.addEventListener('click', (e) => {
+  const elements = withCanvasPointerEvents(() =>
+    document.elementsFromPoint(e.clientX, e.clientY)
+  );
+
   for (const el of elements) {
     if (canvas.contains(el) && el !== canvas) {
       const path = elToPath.get(el);
       if (path) {
-        // Re-enable pointer events on all canvas children
-        resetCanvasPointerEvents();
         update(selectNode(S, path));
         return;
       }
@@ -228,12 +423,27 @@ overlayClk.addEventListener('click', (e) => {
   update(selectNode(S, null));
 });
 
+overlayClk.addEventListener('contextmenu', (e) => {
+  const elements = withCanvasPointerEvents(() =>
+    document.elementsFromPoint(e.clientX, e.clientY)
+  );
+
+  for (const el of elements) {
+    if (canvas.contains(el) && el !== canvas) {
+      const path = elToPath.get(el);
+      if (path) {
+        showContextMenu(e, path);
+        return;
+      }
+    }
+  }
+  e.preventDefault();
+});
+
 overlayClk.addEventListener('mousemove', (e) => {
-  canvas.style.pointerEvents = 'auto';
-  overlayClk.style.pointerEvents = 'none';
-  const el = document.elementFromPoint(e.clientX, e.clientY);
-  overlayClk.style.pointerEvents = '';
-  canvas.style.pointerEvents = '';
+  const el = withCanvasPointerEvents(() =>
+    document.elementFromPoint(e.clientX, e.clientY)
+  );
 
   if (el && canvas.contains(el) && el !== canvas) {
     const path = elToPath.get(el);
@@ -253,11 +463,6 @@ overlayClk.addEventListener('mouseleave', () => {
     renderOverlays();
   }
 });
-
-function resetCanvasPointerEvents() {
-  const allEls = canvas.querySelectorAll('*');
-  for (const el of allEls) el.style.pointerEvents = 'none';
-}
 
 // ─── Left panel: Layers ───────────────────────────────────────────────────────
 
@@ -286,16 +491,24 @@ function renderLeftPanel() {
 }
 
 function renderLayers(container) {
+  // Clean up previous DnD registrations
+  for (const fn of dndCleanups) fn();
+  dndCleanups = [];
+
   const rows = flattenTree(S.document);
   /** @type {Set<string>} */
   const collapsed = S._collapsed || (S._collapsed = new Set());
+
+  // Drop indicator line (positioned absolutely within container)
+  container.style.position = 'relative';
+  const dropLine = document.createElement('div');
+  dropLine.className = 'drop-indicator';
+  container.appendChild(dropLine);
 
   for (const { node, path, depth } of rows) {
     // Check if any ancestor is collapsed
     let hidden = false;
     for (let d = 2; d <= path.length; d += 2) {
-      const ancestorKey = pathKey(path.slice(0, d));
-      // Check if a proper ancestor is collapsed
       if (d < path.length && collapsed.has(pathKey(path.slice(0, d)))) {
         hidden = true;
         break;
@@ -305,6 +518,13 @@ function renderLayers(container) {
 
     const row = document.createElement('div');
     row.className = `layer-row${pathsEqual(path, S.selection) ? ' selected' : ''}`;
+    row.dataset.path = pathKey(path);
+
+    // Drag handle
+    const handle = document.createElement('span');
+    handle.className = 'layer-handle';
+    handle.textContent = '⠿';
+    row.appendChild(handle);
 
     // Indent
     const indent = document.createElement('span');
@@ -316,6 +536,7 @@ function renderLayers(container) {
     const toggle = document.createElement('span');
     toggle.className = 'layer-toggle';
     const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+    const isVoid = VOID_ELEMENTS.has((node.tagName || 'div').toLowerCase());
     const key = pathKey(path);
     if (hasChildren) {
       toggle.textContent = collapsed.has(key) ? '▶' : '▼';
@@ -366,7 +587,148 @@ function renderLayers(container) {
     }
 
     row.onclick = () => update(selectNode(S, path));
+    row.oncontextmenu = (e) => showContextMenu(e, path);
     container.appendChild(row);
+
+    // ─── Register draggable + drop target ────────────────────
+    const rowPath = path; // capture for closures
+    const rowDepth = depth;
+    const rowNode = node;
+
+    const cleanup = combine(
+      draggable({
+        element: row,
+        dragHandle: handle,
+        getInitialData() { return { type: 'tree-node', path: rowPath }; },
+        onDragStart() { row.classList.add('dragging'); },
+        onDrop() { row.classList.remove('dragging'); },
+      }),
+      dropTargetForElements({
+        element: row,
+        canDrop({ source }) {
+          const srcPath = source.data.path;
+          // Can't drop onto self or descendant
+          if (srcPath && isAncestor(srcPath, rowPath)) return false;
+          return true;
+        },
+        getData({ input, element }) {
+          return attachInstruction(
+            { path: rowPath },
+            {
+              input,
+              element,
+              currentLevel: rowDepth,
+              indentPerLevel: 16,
+              block: isVoid ? ['make-child'] : [],
+            }
+          );
+        },
+        onDragEnter({ self }) {
+          showDropIndicator(row, self.data, rowDepth, container);
+        },
+        onDrag({ self }) {
+          showDropIndicator(row, self.data, rowDepth, container);
+        },
+        onDragLeave() {
+          dropLine.style.display = 'none';
+          row.classList.remove('drop-target');
+        },
+        onDrop() {
+          dropLine.style.display = 'none';
+          row.classList.remove('drop-target');
+        },
+      }),
+    );
+    dndCleanups.push(cleanup);
+  }
+
+  // ─── Global monitor: apply the drop ────────────────────────
+  const monitorCleanup = monitorForElements({
+    onDrop({ source, location }) {
+      dropLine.style.display = 'none';
+      const target = location.current.dropTargets[0];
+      if (!target) return;
+
+      const instruction = extractInstruction(target.data);
+      if (!instruction || instruction.type === 'instruction-blocked') return;
+
+      const srcData = source.data;
+      const targetPath = target.data.path;
+
+      applyDropInstruction(instruction, srcData, targetPath);
+    },
+  });
+  dndCleanups.push(monitorCleanup);
+
+  function showDropIndicator(rowEl, data, depth, container) {
+    const instruction = extractInstruction(data);
+    if (!instruction || instruction.type === 'instruction-blocked') {
+      dropLine.style.display = 'none';
+      rowEl.classList.remove('drop-target');
+      return;
+    }
+
+    if (instruction.type === 'make-child') {
+      dropLine.style.display = 'none';
+      rowEl.classList.add('drop-target');
+      return;
+    }
+
+    rowEl.classList.remove('drop-target');
+    const rowRect = rowEl.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+
+    const indent = (instruction.type === 'reorder-above' ? depth : depth) * 16 + 28;
+    const top = instruction.type === 'reorder-above'
+      ? rowRect.top - containerRect.top + container.scrollTop
+      : rowRect.bottom - containerRect.top + container.scrollTop;
+
+    dropLine.style.display = 'block';
+    dropLine.style.top = `${top}px`;
+    dropLine.style.left = `${indent}px`;
+    dropLine.style.right = '8px';
+  }
+}
+
+/** Apply a DnD instruction to the state */
+function applyDropInstruction(instruction, srcData, targetPath) {
+  if (srcData.type === 'tree-node') {
+    const fromPath = srcData.path;
+    const targetParent = parentElementPath(targetPath);
+    const targetIdx = childIndex(targetPath);
+
+    switch (instruction.type) {
+      case 'reorder-above':
+        update(moveNode(S, fromPath, targetParent, targetIdx));
+        break;
+      case 'reorder-below':
+        update(moveNode(S, fromPath, targetParent, targetIdx + 1));
+        break;
+      case 'make-child': {
+        const target = getNodeAtPath(S.document, targetPath);
+        const len = target?.children?.length || 0;
+        update(moveNode(S, fromPath, targetPath, len));
+        break;
+      }
+    }
+  } else if (srcData.type === 'block') {
+    const targetParent = parentElementPath(targetPath);
+    const targetIdx = childIndex(targetPath);
+
+    switch (instruction.type) {
+      case 'reorder-above':
+        update(insertNode(S, targetParent, targetIdx, structuredClone(srcData.fragment)));
+        break;
+      case 'reorder-below':
+        update(insertNode(S, targetParent, targetIdx + 1, structuredClone(srcData.fragment)));
+        break;
+      case 'make-child': {
+        const target = getNodeAtPath(S.document, targetPath);
+        const len = target?.children?.length || 0;
+        update(insertNode(S, targetPath, len, structuredClone(srcData.fragment)));
+        break;
+      }
+    }
   }
 }
 
@@ -374,6 +736,9 @@ function renderBlocks(container) {
   const blocks = [
     { label: 'div', def: { tagName: 'div' } },
     { label: 'section', def: { tagName: 'section' } },
+    { label: 'header', def: { tagName: 'header' } },
+    { label: 'footer', def: { tagName: 'footer' } },
+    { label: 'nav', def: { tagName: 'nav' } },
     { label: 'h1', def: { tagName: 'h1', textContent: 'Heading' } },
     { label: 'h2', def: { tagName: 'h2', textContent: 'Heading' } },
     { label: 'h3', def: { tagName: 'h3', textContent: 'Heading' } },
@@ -381,15 +746,22 @@ function renderBlocks(container) {
     { label: 'span', def: { tagName: 'span', textContent: 'Inline text' } },
     { label: 'button', def: { tagName: 'button', textContent: 'Button' } },
     { label: 'input', def: { tagName: 'input', attributes: { type: 'text', placeholder: 'Enter text...' } } },
+    { label: 'textarea', def: { tagName: 'textarea' } },
+    { label: 'select', def: { tagName: 'select', children: [{ tagName: 'option', textContent: 'Option 1' }] } },
+    { label: 'form', def: { tagName: 'form' } },
     { label: 'img', def: { tagName: 'img', attributes: { src: '', alt: 'Image' } } },
-    { label: 'ul', def: { tagName: 'ul', children: [{ tagName: 'li', textContent: 'Item' }] } },
     { label: 'a', def: { tagName: 'a', textContent: 'Link', attributes: { href: '#' } } },
+    { label: 'ul', def: { tagName: 'ul', children: [{ tagName: 'li', textContent: 'Item' }] } },
+    { label: 'ol', def: { tagName: 'ol', children: [{ tagName: 'li', textContent: 'Item' }] } },
+    { label: 'table', def: { tagName: 'table', children: [
+      { tagName: 'thead', children: [{ tagName: 'tr', children: [{ tagName: 'th', textContent: 'Header' }] }] },
+      { tagName: 'tbody', children: [{ tagName: 'tr', children: [{ tagName: 'td', textContent: 'Cell' }] }] },
+    ] } },
   ];
 
   for (const { label, def } of blocks) {
     const row = document.createElement('div');
-    row.className = 'layer-row';
-    row.style.cursor = 'grab';
+    row.className = 'layer-row block-row';
 
     const badge = document.createElement('span');
     badge.className = 'layer-tag';
@@ -401,13 +773,21 @@ function renderBlocks(container) {
     lbl.textContent = label;
     row.appendChild(lbl);
 
+    // Click to insert at selection
     row.onclick = () => {
-      // Insert as last child of selected node, or as last child of root
       const parentPath = S.selection || [];
       const parent = getNodeAtPath(S.document, parentPath);
-      const idx = parent.children ? parent.children.length : 0;
+      const idx = parent?.children ? parent.children.length : 0;
       update(insertNode(S, parentPath, idx, structuredClone(def)));
     };
+
+    // Also register as draggable for DnD into the layer tree
+    const blockDef = def;
+    const cleanup = draggable({
+      element: row,
+      getInitialData() { return { type: 'block', fragment: structuredClone(blockDef) }; },
+    });
+    dndCleanups.push(cleanup);
 
     container.appendChild(row);
   }
@@ -925,7 +1305,7 @@ document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
 
   // Don't intercept when typing in inputs
-  if (e.target.matches('input, textarea, select')) {
+  if (e.target instanceof HTMLElement && e.target.matches('input, textarea, select')) {
     if (mod && e.key === 's') { e.preventDefault(); saveFile(); }
     return;
   }
@@ -941,6 +1321,18 @@ document.addEventListener('keydown', (e) => {
       case 'd':
         e.preventDefault();
         if (S.selection) update(duplicateNode(S, S.selection));
+        break;
+      case 'c':
+        e.preventDefault();
+        copyNode();
+        break;
+      case 'x':
+        e.preventDefault();
+        cutNode();
+        break;
+      case 'v':
+        e.preventDefault();
+        pasteNode();
         break;
       case '0':
         e.preventDefault();
@@ -1013,6 +1405,114 @@ function navigateSelection(direction) {
     const newPath = [...parentElementPath(S.selection), 'children', newIdx];
     update(selectNode(S, newPath));
   }
+}
+
+// ─── Clipboard ────────────────────────────────────────────────────────────────
+
+let clipboard = null;
+
+function copyNode() {
+  if (!S.selection) return;
+  const node = getNodeAtPath(S.document, S.selection);
+  if (!node) return;
+  clipboard = structuredClone(node);
+  statusMessage('Copied');
+}
+
+function cutNode() {
+  if (!S.selection || S.selection.length < 2) return;
+  const node = getNodeAtPath(S.document, S.selection);
+  if (!node) return;
+  clipboard = structuredClone(node);
+  update(removeNode(S, S.selection));
+  statusMessage('Cut');
+}
+
+function pasteNode() {
+  if (!clipboard) return;
+  const parentPath = S.selection || [];
+  const parent = getNodeAtPath(S.document, parentPath);
+  if (!parent) return;
+
+  if (S.selection && S.selection.length >= 2) {
+    // Paste as sibling after selection
+    const pp = parentElementPath(S.selection);
+    const idx = childIndex(S.selection);
+    update(insertNode(S, pp, idx + 1, structuredClone(clipboard)));
+  } else {
+    // Paste as last child of root/selected
+    const idx = parent.children ? parent.children.length : 0;
+    update(insertNode(S, parentPath, idx, structuredClone(clipboard)));
+  }
+  statusMessage('Pasted');
+}
+
+// ─── Context menu ─────────────────────────────────────────────────────────────
+
+const ctxMenu = document.createElement('div');
+ctxMenu.className = 'ctx-menu';
+ctxMenu.style.display = 'none';
+document.body.appendChild(ctxMenu);
+
+document.addEventListener('click', () => { ctxMenu.style.display = 'none'; });
+
+function showContextMenu(e, path) {
+  e.preventDefault();
+  ctxMenu.style.display = 'none';
+
+  const node = getNodeAtPath(S.document, path);
+  if (!node) return;
+
+  // Select the node
+  update(selectNode(S, path));
+
+  ctxMenu.innerHTML = '';
+  const items = [];
+
+  items.push({ label: 'Copy', action: copyNode });
+  if (path.length >= 2) {
+    items.push({ label: 'Cut', action: cutNode });
+    items.push({ label: 'Duplicate', action: () => update(duplicateNode(S, S.selection)) });
+    items.push({ label: '—' }); // separator
+    items.push({ label: 'Delete', action: () => update(removeNode(S, S.selection)), danger: true });
+  }
+  if (clipboard) {
+    items.push({ label: '—' });
+    items.push({ label: 'Paste inside', action: () => {
+      const idx = node.children ? node.children.length : 0;
+      update(insertNode(S, path, idx, structuredClone(clipboard)));
+    }});
+    if (path.length >= 2) {
+      items.push({ label: 'Paste after', action: () => {
+        const pp = parentElementPath(path);
+        const idx = childIndex(path);
+        update(insertNode(S, pp, idx + 1, structuredClone(clipboard)));
+      }});
+    }
+  }
+
+  for (const item of items) {
+    if (item.label === '—') {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      ctxMenu.appendChild(sep);
+      continue;
+    }
+    const el = document.createElement('div');
+    el.className = `ctx-item${item.danger ? ' danger' : ''}`;
+    el.textContent = item.label;
+    el.onclick = () => { ctxMenu.style.display = 'none'; item.action(); };
+    ctxMenu.appendChild(el);
+  }
+
+  // Position the menu
+  ctxMenu.style.display = 'block';
+  const menuRect = ctxMenu.getBoundingClientRect();
+  let x = e.clientX, y = e.clientY;
+  if (x + menuRect.width > window.innerWidth) x = window.innerWidth - menuRect.width - 4;
+  if (y + menuRect.height > window.innerHeight) y = window.innerHeight - menuRect.height - 4;
+  ctxMenu.style.left = `${x}px`;
+  ctxMenu.style.top = `${y}px`;
 }
 
 // ─── Autosave ─────────────────────────────────────────────────────────────────

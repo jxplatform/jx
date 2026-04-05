@@ -84,6 +84,10 @@ export async function buildScope(doc, parentScope = {}, base = location.href) {
     }
   }
 
+  if (doc.$media) {
+    scope['$media'] = doc.$media;
+  }
+
   if (doc.$handlers) {
     const handlersUrl = new URL(doc.$handlers, base).href;
     const mod = await import(handlersUrl);
@@ -132,6 +136,7 @@ function makeComputedSignal(expression, depKeys, scope) {
 export const RESERVED_KEYS = new Set([
   '$schema', '$id', '$defs', '$handlers', '$ref', '$props',
   '$switch', '$prototype', '$handler', '$compute', '$deps',
+  '$media',
   'signal', 'timing', 'default', 'description',
   'tagName', 'children', 'style', 'attributes',
   'items', 'map', 'filter', 'sort', 'cases',
@@ -162,7 +167,7 @@ export function renderNode(def, scope) {
   const el = document.createElement(def.tagName ?? 'div');
 
   applyProperties(el, def, localScope);
-  applyStyle(el, def.style ?? {});
+  applyStyle(el, def.style ?? {}, localScope['$media'] ?? {});
   applyAttributes(el, def.attributes ?? {}, localScope);
 
   for (const child of (Array.isArray(def.children) ? def.children : [])) {
@@ -204,23 +209,36 @@ function bindProperty(el, key, val, scope) {
 }
 
 /**
- * Apply inline styles and emit a scoped <style> block for nested CSS selectors.
+ * Apply inline styles and emit a scoped <style> block for nested CSS selectors
+ * and @custom-media breakpoint rules.
+ *
+ * Media keys follow CSS Media Queries Level 4 @custom-media convention:
+ *   "@--md"                  → resolves name "--md" from mediaQueries dict
+ *   "@(min-width: 768px)"    → literal media condition (strip leading "@")
  *
  * @param {HTMLElement} el
  * @param {object}      styleDef
+ * @param {object}      [mediaQueries={}]  Named breakpoints from root $media
  */
-export function applyStyle(el, styleDef) {
+export function applyStyle(el, styleDef, mediaQueries = {}) {
   const nested = {};
+  const media  = {};
+
   for (const [prop, val] of Object.entries(styleDef)) {
-    if (isNestedSelector(prop)) nested[prop] = val;
+    if (prop.startsWith('@'))    media[prop]  = val;
+    else if (isNestedSelector(prop)) nested[prop] = val;
     else el.style[prop] = val;
   }
-  if (!Object.keys(nested).length) return;
+
+  const hasNested = Object.keys(nested).length > 0;
+  const hasMedia  = Object.keys(media).length  > 0;
+  if (!hasNested && !hasMedia) return;
 
   const uid = `jsonsx-${Math.random().toString(36).slice(2, 7)}`;
   el.dataset.jsonsx = uid;
 
   let css = '';
+
   for (const [sel, rules] of Object.entries(nested)) {
     const resolved = sel.startsWith('&')
       ? sel.replace('&', `[data-jsonsx="${uid}"]`)
@@ -228,6 +246,14 @@ export function applyStyle(el, styleDef) {
         ? `[data-jsonsx="${uid}"]${sel}`
         : `[data-jsonsx="${uid}"] ${sel}`;
     css += `${resolved} { ${toCSSText(rules)} }\n`;
+  }
+
+  for (const [key, rules] of Object.entries(media)) {
+    // "@--md" → look up "--md" in mediaQueries; "@(min-width: 768px)" → use as-is
+    const query = key.startsWith('@--')
+      ? (mediaQueries[key.slice(1)] ?? key.slice(1))
+      : key.slice(1);
+    css += `@media ${query} { [data-jsonsx="${uid}"] { ${toCSSText(rules)} } }\n`;
   }
 
   const tag = document.createElement('style');

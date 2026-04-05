@@ -42,7 +42,10 @@
     .overlay-box { position: absolute; pointer-events: none; }
     .overlay-selection { border: 2px solid var(--accent); }
     .overlay-hover { border: 1px solid rgba(0,122,204,0.5); }
-    .overlay-label { position: absolute; top: -20px; left: -1px; padding: 1px 5px; font-size: 10px; background: var(--accent); color: var(--accent-fg); border-radius: 2px 2px 0 0; white-space: nowrap; pointer-events: none; }
+    .overlay-label { position: absolute; top: -20px; left: -2px; display: flex; align-items: center; padding: 1px 5px; font-size: 10px; background: var(--accent); color: var(--accent-fg); border-radius: 2px 2px 0 0; white-space: nowrap; pointer-events: none; }
+    .overlay-drag-handle { pointer-events: auto; cursor: grab; margin-right: 4px; font-size: 11px; opacity: 0.7; }
+    .overlay-drag-handle:hover { opacity: 1; }
+    .overlay-drag-handle:active { cursor: grabbing; }
 
     /* ─── Panel tabs ─────────────────────────────── */
     .panel-tabs { display: flex; border-bottom: 1px solid var(--border); }
@@ -55,13 +58,26 @@
     .layer-row { display: flex; align-items: center; gap: 4px; padding: 3px 8px; cursor: pointer; white-space: nowrap; user-select: none; border-left: 2px solid transparent; }
     .layer-row:hover { background: rgba(255,255,255,0.04); }
     .layer-row.selected { background: rgba(0,122,204,0.2); border-left-color: var(--accent); }
+    .layer-row.dragging { opacity: 0.4; }
+    .layer-row.drop-target { background: rgba(0,122,204,0.15); outline: 1px dashed var(--accent); outline-offset: -1px; }
     .layer-indent { flex-shrink: 0; }
+    .layer-handle { cursor: grab; color: var(--fg-dim); font-size: 11px; flex-shrink: 0; width: 14px; text-align: center; opacity: 0; transition: opacity 0.1s; }
+    .layer-row:hover .layer-handle { opacity: 1; }
     .layer-toggle { width: 14px; text-align: center; font-size: 9px; color: var(--fg-dim); cursor: pointer; flex-shrink: 0; }
     .layer-tag { padding: 0 4px; font-size: 10px; border-radius: 2px; color: var(--accent-fg); background: var(--tag); flex-shrink: 0; }
     .layer-label { overflow: hidden; text-overflow: ellipsis; flex: 1; }
     .layer-dot { font-size: 9px; flex-shrink: 0; }
     .layer-delete { visibility: hidden; cursor: pointer; color: var(--danger); font-size: 11px; flex-shrink: 0; }
     .layer-row:hover .layer-delete { visibility: visible; }
+    .block-row { cursor: grab; }
+
+    /* ─── Drop indicator ──────────────────────────── */
+    .drop-indicator { display: none; position: absolute; height: 2px; background: var(--accent); z-index: 5; pointer-events: none; }
+
+    /* ─── Canvas drop indicator ───────────────────── */
+    .canvas-drop-indicator { position: absolute; pointer-events: none; z-index: 11; }
+    .canvas-drop-indicator.line { height: 2px; background: var(--accent); }
+    .canvas-drop-indicator.inside { border: 2px dashed var(--accent); background: rgba(0,122,204,0.08); }
 
     /* ─── Inspector ──────────────────────────────── */
     .inspector-section { border-bottom: 1px solid var(--border); }
@@ -111,6 +127,14 @@
 
     /* ─── Empty state ────────────────────────────── */
     .empty-state { padding: 24px; text-align: center; color: var(--fg-dim); font-size: 13px; }
+
+    /* ─── Context menu ────────────────────────────── */
+    .ctx-menu { position: fixed; z-index: 100; min-width: 160px; padding: 4px 0; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+    .ctx-item { padding: 4px 12px; font-size: 12px; cursor: pointer; color: var(--fg); }
+    .ctx-item:hover { background: var(--accent); color: var(--accent-fg); }
+    .ctx-item.danger { color: var(--danger); }
+    .ctx-item.danger:hover { background: var(--danger); color: #fff; }
+    .ctx-sep { height: 1px; margin: 4px 0; background: var(--border); }
   </style>
 </head>
 <body>
@@ -125,6 +149,6 @@
     <div id="right-panel"></div>
     <div id="statusbar"></div>
   </div>
-  <script type="module" src="./studio.js"></script>
+  <script type="module" src="../dist/studio/studio.js"></script>
 </body>
 </html>

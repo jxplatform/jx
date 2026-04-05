@@ -13,7 +13,7 @@ import { watch } from 'fs';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
 
-async function build() {
+async function buildRuntime() {
   const result = await Bun.build({
     entrypoints: ['./runtime/runtime.js'],
     outdir:      './dist',
@@ -25,8 +25,22 @@ async function build() {
   return result.success;
 }
 
-await build();
+async function buildStudio() {
+  const result = await Bun.build({
+    entrypoints: ['./studio/studio.js'],
+    outdir:      './dist/studio',
+    target:      'browser',
+    format:      'esm',
+    sourcemap:   'linked',
+  });
+  if (!result.success) result.logs.forEach(l => console.error(l));
+  return result.success;
+}
+
+await buildRuntime();
 console.log('Built → dist/runtime.js');
+await buildStudio();
+console.log('Built → dist/studio/studio.js');
 
 // ─── Live reload (SSE) ────────────────────────────────────────────────────────
 
@@ -54,10 +68,15 @@ watch('.', { recursive: true }, async (_, filename) => {
   debounce = setTimeout(async () => {
     // Rebuild the bundle when the runtime source files change
     const isRuntime = filename.includes('runtime') || filename.endsWith('effect.js');
+    const isStudio  = filename.includes('studio');
     if (isRuntime) {
-      const ok = await build();
+      const ok = await buildRuntime();
       if (ok) console.log(`Rebuilt  → dist/runtime.js  (${filename} changed)`);
       else    return; // don't reload if build failed
+    } else if (isStudio) {
+      const ok = await buildStudio();
+      if (ok) console.log(`Rebuilt  → dist/studio/studio.js  (${filename} changed)`);
+      else    return;
     } else {
       console.log(`Changed  → ${filename}`);
     }

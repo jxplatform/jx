@@ -186,12 +186,18 @@ export function duplicateNode(state, path) {
 
 export function moveNode(state, fromPath, toParentPath, toIndex) {
   return applyMutation(state, doc => {
-    const fromParent = getNodeAtPath(doc, parentElementPath(fromPath));
+    const fromParentPath = parentElementPath(fromPath);
+    const fromParent = getNodeAtPath(doc, fromParentPath);
     const fromIdx = childIndex(fromPath);
     const [node] = fromParent.children.splice(fromIdx, 1);
     const toParent = getNodeAtPath(doc, toParentPath);
     if (!toParent.children) toParent.children = [];
-    toParent.children.splice(toIndex, 0, node);
+    // Adjust target index if moving within the same parent and source was before target
+    let adjustedIndex = toIndex;
+    if (fromParent === toParent && fromIdx < toIndex) {
+      adjustedIndex--;
+    }
+    toParent.children.splice(adjustedIndex, 0, node);
   });
 }
 

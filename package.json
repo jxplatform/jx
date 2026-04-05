@@ -12,7 +12,9 @@
   },
   "scripts": {
     "dev": "bun run examples/server.js",
-    "build": "bun build ./runtime/runtime.js --outdir dist --target browser --sourcemap=linked",
+    "build": "bun build ./runtime/runtime.js --outdir dist --target browser --sourcemap=linked && bun build ./studio/studio.js --outdir dist/studio --target browser --sourcemap=linked",
+    "build:runtime": "bun build ./runtime/runtime.js --outdir dist --target browser --sourcemap=linked",
+    "build:studio": "bun build ./studio/studio.js --outdir dist/studio --target browser --sourcemap=linked",
     "schema": "bun run ./schema/schema.js ./schema/schema.json",
     "compile": "bun run ./compiler/compiler.js"
   },
@@ -25,6 +27,8 @@
   ],
   "dependencies": {
     "@apidevtools/json-schema-ref-parser": "^15.3.5",
+    "@atlaskit/pragmatic-drag-and-drop": "^1.7.10",
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0",
     "jsonata": "^2.1.0",
     "signal-polyfill": "^0.2.2"
   },
