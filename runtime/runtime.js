@@ -36,6 +36,7 @@ export async function JSONsx(source, target = document.body) {
   const doc   = await resolve(source);
   const scope = await buildScope(doc, {}, base);
   target.appendChild(renderNode(doc, scope));
+  if (typeof scope.onMount === 'function') scope.onMount.call(scope);
   return scope;
 }
 

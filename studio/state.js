@@ -99,6 +99,8 @@ export function createState(doc) {
       leftTab: 'layers',      // 'layers' | 'blocks'
       rightTab: 'properties',  // 'properties' | 'source' | 'handlers'
       zoom: 1,
+      activeMedia: null,       // '--md' | null (base) — focused canvas/breakpoint
+      featureToggles: {},      // { '--dark': true } — non-size media toggles
     },
   };
 }
@@ -241,6 +243,38 @@ export function removeDef(state, name) {
     if (doc.$defs) {
       delete doc.$defs[name];
       if (Object.keys(doc.$defs).length === 0) delete doc.$defs;
+    }
+  });
+}
+
+// ─── Media mutations ─────────────────────────────────────────────────────────
+
+/** Update a style property inside a media override block (e.g., @--md). */
+export function updateMediaStyle(state, path, mediaName, prop, value) {
+  return applyMutation(state, doc => {
+    const node = getNodeAtPath(doc, path);
+    if (!node.style) node.style = {};
+    const key = `@${mediaName}`;
+    if (!node.style[key]) node.style[key] = {};
+    if (value === undefined || value === '') {
+      delete node.style[key][prop];
+      if (Object.keys(node.style[key]).length === 0) delete node.style[key];
+    } else {
+      node.style[key][prop] = value;
+    }
+    if (Object.keys(node.style).length === 0) delete node.style;
+  });
+}
+
+/** Add or update a named media entry at the document root. */
+export function updateMedia(state, name, query) {
+  return applyMutation(state, doc => {
+    if (!doc.$media) doc.$media = {};
+    if (query === undefined || query === '') {
+      delete doc.$media[name];
+      if (Object.keys(doc.$media).length === 0) delete doc.$media;
+    } else {
+      doc.$media[name] = query;
     }
   });
 }

@@ -10,6 +10,7 @@ import {
   createState, selectNode, hoverNode, undo, redo,
   insertNode, removeNode, duplicateNode, moveNode, updateProperty,
   updateStyle, updateAttribute, addDef, removeDef,
+  updateMediaStyle, updateMedia,
   getNodeAtPath, flattenTree, nodeLabel, pathKey,
   pathsEqual, parentElementPath, childIndex, isAncestor,
 } from './state.js';
@@ -35,9 +36,7 @@ let statusTimeout;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
-const canvas     = $('#canvas');
-const overlay    = $('#overlay');
-const overlayClk = $('#overlay-click');
+const canvasWrap = $('#canvas-wrap');
 const leftPanel  = $('#left-panel');
 const rightPanel = $('#right-panel');
 const toolbar    = $('#toolbar');
@@ -54,15 +53,16 @@ let canvasDndCleanups = [];
 /** Cleanup function for the current selection drag registration */
 let selDragCleanup = null;
 
-/** Canvas drop indicator element */
-const canvasDropLine = document.createElement('div');
-canvasDropLine.className = 'canvas-drop-indicator';
-canvasDropLine.style.display = 'none';
-
 /** Void elements that cannot accept children */
 const VOID_ELEMENTS = new Set([
   'area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr',
 ]);
+
+/**
+ * Canvas panels: Array<{ mediaName, canvas, overlay, overlayClk, viewport, dropLine }>
+ * Built dynamically in renderCanvas() based on $media definitions.
+ */
+let canvasPanels = [];
 
 // ─── Webdata: datalists for autocomplete ──────────────────────────────────────
 
@@ -131,34 +131,187 @@ function update(newState) {
   renderStatusbar();
 }
 
+// ─── Media helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Classify $media entries into size breakpoints (get a canvas each)
+ * and feature queries (rendered as toolbar toggles).
+ */
+function parseMediaEntries(mediaDef) {
+  if (!mediaDef) return { sizeBreakpoints: [], featureQueries: [] };
+  const sizes = [], features = [];
+  for (const [name, query] of Object.entries(mediaDef)) {
+    const minMatch = query.match(/min-width:\s*([\d.]+)px/);
+    const maxMatch = query.match(/max-width:\s*([\d.]+)px/);
+    if (minMatch) sizes.push({ name, query, width: parseFloat(minMatch[1]), type: 'min' });
+    else if (maxMatch) sizes.push({ name, query, width: parseFloat(maxMatch[1]), type: 'max' });
+    else features.push({ name, query });
+  }
+  sizes.sort((a, b) => a.type === 'min' ? a.width - b.width : b.width - a.width);
+  return { sizeBreakpoints: sizes, featureQueries: features };
+}
+
+/**
+ * Compute which named breakpoints are active at a given canvas width.
+ * For min-width canvases: all breakpoints with min-width <= canvasWidth are active.
+ * For max-width canvases: all breakpoints with max-width >= canvasWidth are active.
+ */
+function activeBreakpointsForWidth(sizeBreakpoints, canvasWidth) {
+  const active = new Set();
+  for (const bp of sizeBreakpoints) {
+    if (bp.type === 'min' && canvasWidth >= bp.width) active.add(bp.name);
+    else if (bp.type === 'max' && canvasWidth <= bp.width) active.add(bp.name);
+  }
+  return active;
+}
+
+/**
+ * Apply styles to a canvas element, including active media overrides.
+ * Base (flat) styles applied first, then matching media overrides in source order.
+ */
+function applyCanvasStyle(el, styleDef, activeBreakpoints, featureToggles) {
+  if (!styleDef || typeof styleDef !== 'object') return;
+  for (const [prop, val] of Object.entries(styleDef)) {
+    if (typeof val === 'string' || typeof val === 'number') {
+      try { el.style[prop] = val; } catch {}
+    }
+  }
+  for (const [key, val] of Object.entries(styleDef)) {
+    if (!key.startsWith('@') || typeof val !== 'object') continue;
+    const mediaName = key.slice(1);
+    if (activeBreakpoints.has(mediaName) || featureToggles[mediaName]) {
+      for (const [prop, v] of Object.entries(val)) {
+        if (typeof v === 'string' || typeof v === 'number') {
+          try { el.style[prop] = v; } catch {}
+        }
+      }
+    }
+  }
+}
+
 // ─── Canvas ───────────────────────────────────────────────────────────────────
 
 function renderCanvas() {
   // Clean up previous canvas DnD registrations
   for (const fn of canvasDndCleanups) fn();
   canvasDndCleanups = [];
+  canvasPanels = [];
+  canvasWrap.innerHTML = '';
 
-  canvas.innerHTML = '';
-  canvas.style.transform = `scale(${S.ui.zoom})`;
-  renderCanvasNode(S.document, [], canvas);
-  registerCanvasDnD();
+  const { sizeBreakpoints, featureQueries } = parseMediaEntries(S.document.$media);
+  const hasMedia = sizeBreakpoints.length > 0;
+  const featureToggles = S.ui.featureToggles;
+
+  if (!hasMedia) {
+    // Single full-width canvas (backward-compatible)
+    const panel = createCanvasPanel(null, null, true);
+    canvasWrap.appendChild(panel.element);
+    canvasPanels.push(panel);
+    renderCanvasNode(S.document, [], panel.canvas, new Set(), featureToggles);
+    registerPanelDnD(panel);
+    registerPanelEvents(panel);
+    return;
+  }
+
+  // Base canvas (mobile-first default: 320px)
+  const baseWidth = sizeBreakpoints[0].type === 'min' ? 320 : sizeBreakpoints[0].width;
+  const baseActive = activeBreakpointsForWidth(sizeBreakpoints, baseWidth);
+  const basePanel = createCanvasPanel('base', `Base (${baseWidth}px)`, false, baseWidth);
+  canvasWrap.appendChild(basePanel.element);
+  canvasPanels.push(basePanel);
+  renderCanvasNode(S.document, [], basePanel.canvas, baseActive, featureToggles);
+  registerPanelDnD(basePanel);
+  registerPanelEvents(basePanel);
+
+  // One panel per size breakpoint
+  for (const bp of sizeBreakpoints) {
+    const active = activeBreakpointsForWidth(sizeBreakpoints, bp.width);
+    const label = `${bp.name} (${bp.width}px)`;
+    const panel = createCanvasPanel(bp.name, label, false, bp.width);
+    canvasWrap.appendChild(panel.element);
+    canvasPanels.push(panel);
+    renderCanvasNode(S.document, [], panel.canvas, active, featureToggles);
+    registerPanelDnD(panel);
+    registerPanelEvents(panel);
+  }
+
+  // Highlight active panel header
+  updateActivePanelHeaders();
+}
+
+/**
+ * Create a canvas panel DOM structure.
+ * Returns { mediaName, element, canvas, overlay, overlayClk, viewport, dropLine }
+ */
+function createCanvasPanel(mediaName, label, fullWidth, width) {
+  const panel = document.createElement('div');
+  panel.className = `canvas-panel${fullWidth ? ' full-width' : ''}`;
+  if (mediaName !== null) panel.dataset.media = mediaName;
+
+  if (label) {
+    const header = document.createElement('div');
+    header.className = 'canvas-panel-header';
+    header.textContent = label;
+    header.onclick = () => {
+      S = { ...S, ui: { ...S.ui, activeMedia: mediaName === 'base' ? null : mediaName } };
+      updateActivePanelHeaders();
+      renderRightPanel();
+    };
+    panel.appendChild(header);
+  }
+
+  const viewport = document.createElement('div');
+  viewport.className = 'canvas-panel-viewport';
+  if (width && !fullWidth) viewport.style.width = `${width * S.ui.zoom}px`;
+
+  const canvasDiv = document.createElement('div');
+  canvasDiv.className = 'canvas-panel-canvas';
+  canvasDiv.style.zoom = S.ui.zoom;
+  canvasDiv.style.width = width ? `${width}px` : '';
+
+  const overlayDiv = document.createElement('div');
+  overlayDiv.className = 'canvas-panel-overlay';
+
+  const dropLine = document.createElement('div');
+  dropLine.className = 'canvas-drop-indicator';
+  dropLine.style.display = 'none';
+  overlayDiv.appendChild(dropLine);
+
+  const clickDiv = document.createElement('div');
+  clickDiv.className = 'canvas-panel-click';
+
+  viewport.appendChild(canvasDiv);
+  viewport.appendChild(overlayDiv);
+  viewport.appendChild(clickDiv);
+  panel.appendChild(viewport);
+
+  return { mediaName, element: panel, canvas: canvasDiv, overlay: overlayDiv, overlayClk: clickDiv, viewport, dropLine };
+}
+
+function updateActivePanelHeaders() {
+  for (const p of canvasPanels) {
+    const header = p.element.querySelector('.canvas-panel-header');
+    if (header) {
+      const isActive = (S.ui.activeMedia === null && p.mediaName === 'base') ||
+                        (S.ui.activeMedia === null && p.mediaName === null) ||
+                        (S.ui.activeMedia === p.mediaName);
+      header.classList.toggle('active', isActive);
+    }
+  }
 }
 
 /**
  * Recursively render a JSONsx node to the canvas DOM.
- * Simplified renderer for the builder — no signals, no handlers.
- * Just static DOM from the JSON tree.
+ * Media-aware: applies base styles + active breakpoint/feature overrides.
  */
-function renderCanvasNode(node, path, parent) {
+function renderCanvasNode(node, path, parent, activeBreakpoints, featureToggles) {
   if (!node || typeof node !== 'object') return;
 
   const tag = node.tagName || 'div';
   const el = document.createElement(tag);
 
-  // Map element → path for click-to-select
   elToPath.set(el, path);
 
-  // Apply textContent
   if (typeof node.textContent === 'string') {
     el.textContent = node.textContent;
   } else if (typeof node.textContent === 'object' && node.textContent?.$ref) {
@@ -167,36 +320,24 @@ function renderCanvasNode(node, path, parent) {
     el.style.fontStyle = 'italic';
   }
 
-  // Apply id / className
   if (node.id) el.id = node.id;
   if (node.className) el.className = node.className;
 
-  // Apply style
-  if (node.style && typeof node.style === 'object') {
-    for (const [prop, val] of Object.entries(node.style)) {
-      if (typeof val === 'string' || typeof val === 'number') {
-        try { el.style[prop] = val; } catch {}
-      }
-    }
-  }
+  applyCanvasStyle(el, node.style, activeBreakpoints, featureToggles);
 
-  // Apply attributes
   if (node.attributes && typeof node.attributes === 'object') {
     for (const [attr, val] of Object.entries(node.attributes)) {
       try { el.setAttribute(attr, val); } catch {}
     }
   }
 
-  // Recursively render children
   if (Array.isArray(node.children)) {
     for (let i = 0; i < node.children.length; i++) {
-      renderCanvasNode(node.children[i], [...path, 'children', i], el);
+      renderCanvasNode(node.children[i], [...path, 'children', i], el, activeBreakpoints, featureToggles);
     }
   }
 
-  // Prevent canvas children from receiving pointer events (re-enabled during drag)
   el.style.pointerEvents = 'none';
-
   parent.appendChild(el);
   return el;
 }
@@ -205,31 +346,31 @@ function renderCanvasNode(node, path, parent) {
 let lastDragInput = null;
 
 /**
- * Register all canvas elements as DnD drop targets.
- * Pointer events are toggled on only during active drags.
+ * Register all canvas elements in a panel as DnD drop targets.
  */
-function registerCanvasDnD() {
+function registerPanelDnD(panel) {
+  const { canvas, overlayClk, dropLine } = panel;
   const allEls = canvas.querySelectorAll('*');
 
-  // Global monitor: enable pointer-events on canvas during drag, disable after
   const monitorCleanup = monitorForElements({
     onDragStart() {
       for (const el of canvas.querySelectorAll('*')) {
         el.style.pointerEvents = 'auto';
       }
-      overlayClk.style.pointerEvents = 'none';
+      // Disable click layers on ALL panels during drag
+      for (const p of canvasPanels) p.overlayClk.style.pointerEvents = 'none';
     },
     onDrag({ location }) {
-      // Track pointer position for all canvas drop targets
       lastDragInput = location.current.input;
     },
     onDrop() {
-      canvasDropLine.style.display = 'none';
+      // Hide all drop lines
+      for (const p of canvasPanels) p.dropLine.style.display = 'none';
       lastDragInput = null;
       for (const el of canvas.querySelectorAll('*')) {
         el.style.pointerEvents = 'none';
       }
-      overlayClk.style.pointerEvents = '';
+      for (const p of canvasPanels) p.overlayClk.style.pointerEvents = '';
     },
   });
   canvasDndCleanups.push(monitorCleanup);
@@ -248,26 +389,24 @@ function registerCanvasDnD() {
         if (srcPath && isAncestor(srcPath, elPath)) return false;
         return true;
       },
-      getData({ input, element }) {
+      getData() {
         return { path: elPath, _isVoid: isVoid };
       },
-      onDragEnter({ self, source }) {
-        showCanvasDropIndicator(el, elPath, isVoid);
+      onDragEnter() {
+        showCanvasDropIndicator(el, elPath, isVoid, panel);
       },
-      onDrag({ self, source }) {
-        showCanvasDropIndicator(el, elPath, isVoid);
+      onDrag() {
+        showCanvasDropIndicator(el, elPath, isVoid, panel);
       },
       onDragLeave() {
-        canvasDropLine.style.display = 'none';
+        dropLine.style.display = 'none';
         el.classList.remove('canvas-drop-target');
       },
-      onDrop({ self, source }) {
-        canvasDropLine.style.display = 'none';
+      onDrop({ source }) {
+        dropLine.style.display = 'none';
         el.classList.remove('canvas-drop-target');
-
         const instruction = getCanvasDropInstruction(el, elPath, isVoid);
         if (!instruction) return;
-
         applyDropInstruction(instruction, source.data, elPath);
       },
     });
@@ -275,119 +414,119 @@ function registerCanvasDnD() {
   }
 }
 
-/**
- * Determine drop instruction based on pointer position relative to element bounds.
- * Top 25% = reorder-above, bottom 25% = reorder-below, middle 50% = make-child.
- */
 function getCanvasDropInstruction(el, elPath, isVoid) {
   const rect = el.getBoundingClientRect();
   if (!lastDragInput) return null;
-
   const y = lastDragInput.clientY;
   const relY = (y - rect.top) / rect.height;
 
-  // Root element can only accept make-child
-  if (elPath.length === 0) {
-    return { type: 'make-child' };
-  }
-
-  if (isVoid) {
-    return relY < 0.5 ? { type: 'reorder-above' } : { type: 'reorder-below' };
-  }
-
+  if (elPath.length === 0) return { type: 'make-child' };
+  if (isVoid) return relY < 0.5 ? { type: 'reorder-above' } : { type: 'reorder-below' };
   if (relY < 0.25) return { type: 'reorder-above' };
   if (relY > 0.75) return { type: 'reorder-below' };
   return { type: 'make-child' };
 }
 
-function showCanvasDropIndicator(el, elPath, isVoid) {
+function showCanvasDropIndicator(el, elPath, isVoid, panel) {
   const instruction = getCanvasDropInstruction(el, elPath, isVoid);
-  if (!instruction) {
-    canvasDropLine.style.display = 'none';
-    return;
-  }
+  const { dropLine, viewport } = panel;
+  if (!instruction) { dropLine.style.display = 'none'; return; }
 
-  const zoom = S.ui.zoom;
-  const wrapRect = canvas.parentElement.getBoundingClientRect();
+  const wrapRect = viewport.getBoundingClientRect();
   const elRect = el.getBoundingClientRect();
-
-  const left = (elRect.left - wrapRect.left + canvas.parentElement.scrollLeft) / zoom;
-  const width = elRect.width / zoom;
+  const left = elRect.left - wrapRect.left + viewport.scrollLeft;
+  const width = elRect.width;
 
   if (instruction.type === 'make-child') {
-    canvasDropLine.style.display = 'block';
-    canvasDropLine.style.top = `${(elRect.top - wrapRect.top + canvas.parentElement.scrollTop) / zoom}px`;
-    canvasDropLine.style.left = `${left}px`;
-    canvasDropLine.style.width = `${width}px`;
-    canvasDropLine.style.height = `${elRect.height / zoom}px`;
-    canvasDropLine.className = 'canvas-drop-indicator inside';
+    dropLine.style.display = 'block';
+    dropLine.style.top = `${elRect.top - wrapRect.top + viewport.scrollTop}px`;
+    dropLine.style.left = `${left}px`;
+    dropLine.style.width = `${width}px`;
+    dropLine.style.height = `${elRect.height}px`;
+    dropLine.className = 'canvas-drop-indicator inside';
     el.classList.add('canvas-drop-target');
     return;
   }
 
   el.classList.remove('canvas-drop-target');
   const top = instruction.type === 'reorder-above'
-    ? (elRect.top - wrapRect.top + canvas.parentElement.scrollTop) / zoom
-    : (elRect.bottom - wrapRect.top + canvas.parentElement.scrollTop) / zoom;
+    ? elRect.top - wrapRect.top + viewport.scrollTop
+    : elRect.bottom - wrapRect.top + viewport.scrollTop;
 
-  canvasDropLine.style.display = 'block';
-  canvasDropLine.style.top = `${top}px`;
-  canvasDropLine.style.left = `${left}px`;
-  canvasDropLine.style.width = `${width}px`;
-  canvasDropLine.style.height = '2px';
-  canvasDropLine.className = 'canvas-drop-indicator line';
+  dropLine.style.display = 'block';
+  dropLine.style.top = `${top}px`;
+  dropLine.style.left = `${left}px`;
+  dropLine.style.width = `${width}px`;
+  dropLine.style.height = '2px';
+  dropLine.className = 'canvas-drop-indicator line';
 }
 
 // ─── Overlay system ───────────────────────────────────────────────────────────
 
 function renderOverlays() {
-  overlay.innerHTML = '';
-  // Re-attach canvasDropLine so it survives innerHTML clear
-  overlay.appendChild(canvasDropLine);
-
-  if (S.hover && !pathsEqual(S.hover, S.selection)) {
-    const el = findCanvasElement(S.hover);
-    if (el) drawOverlayBox(el, 'hover');
+  // Clear all panel overlays
+  for (const p of canvasPanels) {
+    p.overlay.innerHTML = '';
+    p.overlay.appendChild(p.dropLine);
   }
 
-  // Clean up previous drag registration
   if (selDragCleanup) { selDragCleanup(); selDragCleanup = null; }
 
-  if (S.selection) {
-    const el = findCanvasElement(S.selection);
-    if (el) {
-      const box = drawOverlayBox(el, 'selection');
-      // Add drag handle inside the label for non-root selections
-      if (S.selection.length >= 2) {
-        const label = box.querySelector('.overlay-label');
-        if (label) {
-          const handle = document.createElement('span');
-          handle.className = 'overlay-drag-handle';
-          handle.textContent = '⠿';
-          label.prepend(handle);
+  // Draw hover overlay on whichever panel the hover is on
+  if (S.hover && !pathsEqual(S.hover, S.selection)) {
+    for (const p of canvasPanels) {
+      const el = findCanvasElement(S.hover, p.canvas);
+      if (el) drawOverlayBox(el, 'hover', p);
+    }
+  }
 
-          const path = S.selection;
-          selDragCleanup = draggable({
-            element: handle,
-            getInitialData() { return { type: 'tree-node', path }; },
-          });
+  // Draw selection overlay only on the active panel
+  if (S.selection) {
+    const activePanel = getActivePanel();
+    if (activePanel) {
+      const el = findCanvasElement(S.selection, activePanel.canvas);
+      if (el) {
+        const box = drawOverlayBox(el, 'selection', activePanel);
+        if (S.selection.length >= 2) {
+          const label = box.querySelector('.overlay-label');
+          if (label) {
+            const handle = document.createElement('span');
+            handle.className = 'overlay-drag-handle';
+            handle.textContent = '⠿';
+            label.prepend(handle);
+
+            const path = S.selection;
+            selDragCleanup = draggable({
+              element: handle,
+              getInitialData() { return { type: 'tree-node', path }; },
+            });
+          }
         }
       }
     }
   }
 }
 
-function drawOverlayBox(el, type) {
-  const zoom = S.ui.zoom;
-  const canvasRect = canvas.parentElement.getBoundingClientRect();
+function getActivePanel() {
+  if (canvasPanels.length === 0) return null;
+  if (canvasPanels.length === 1) return canvasPanels[0];
+  for (const p of canvasPanels) {
+    if (S.ui.activeMedia === null && (p.mediaName === 'base' || p.mediaName === null)) return p;
+    if (p.mediaName === S.ui.activeMedia) return p;
+  }
+  return canvasPanels[0];
+}
+
+function drawOverlayBox(el, type, panel) {
+  const vpRect = panel.viewport.getBoundingClientRect();
   const elRect = el.getBoundingClientRect();
 
   const box = document.createElement('div');
   box.className = `overlay-box overlay-${type}`;
-  box.style.top = `${(elRect.top - canvasRect.top + canvas.parentElement.scrollTop) / zoom}px`;
-  box.style.left = `${(elRect.left - canvasRect.left + canvas.parentElement.scrollLeft) / zoom}px`;
-  box.style.width = `${elRect.width / zoom}px`;
-  box.style.height = `${elRect.height / zoom}px`;
+  box.style.top = `${elRect.top - vpRect.top + panel.viewport.scrollTop}px`;
+  box.style.left = `${elRect.left - vpRect.left + panel.viewport.scrollLeft}px`;
+  box.style.width = `${elRect.width}px`;
+  box.style.height = `${elRect.height}px`;
 
   if (type === 'selection') {
     const node = getNodeAtPath(S.document, S.selection);
@@ -397,18 +536,16 @@ function drawOverlayBox(el, type) {
     box.appendChild(label);
   }
 
-  overlay.appendChild(box);
+  panel.overlay.appendChild(box);
   return box;
 }
 
-function findCanvasElement(path) {
-  // Walk the canvas DOM to find the element at the given path
-  let el = canvas.firstElementChild; // root node
+function findCanvasElement(path, canvasEl) {
+  let el = canvasEl.firstElementChild;
   if (!el) return null;
   if (path.length === 0) return el;
 
   for (let i = 0; i < path.length; i += 2) {
-    // path is like ['children', 0, 'children', 2]
     if (path[i] !== 'children') return null;
     const idx = path[i + 1];
     el = el.children[idx];
@@ -417,77 +554,78 @@ function findCanvasElement(path) {
   return el;
 }
 
-// ─── Canvas click-to-select ───────────────────────────────────────────────────
+// ─── Per-panel click-to-select ────────────────────────────────────────────────
 
-/** Temporarily enable pointer events on all canvas elements, run fn, then restore */
-function withCanvasPointerEvents(fn) {
-  const els = canvas.querySelectorAll('*');
-  for (const el of els) el.style.pointerEvents = 'auto';
-  overlayClk.style.display = 'none';
-  const result = fn();
-  overlayClk.style.display = '';
-  for (const el of els) el.style.pointerEvents = 'none';
-  return result;
-}
+function registerPanelEvents(panel) {
+  const { canvas, overlayClk, mediaName } = panel;
 
-overlayClk.addEventListener('click', (e) => {
-  const elements = withCanvasPointerEvents(() =>
-    document.elementsFromPoint(e.clientX, e.clientY)
-  );
+  function withPanelPointerEvents(fn) {
+    const els = canvas.querySelectorAll('*');
+    for (const el of els) el.style.pointerEvents = 'auto';
+    overlayClk.style.display = 'none';
+    const result = fn();
+    overlayClk.style.display = '';
+    for (const el of els) el.style.pointerEvents = 'none';
+    return result;
+  }
 
-  for (const el of elements) {
-    if (canvas.contains(el) && el !== canvas) {
-      const path = elToPath.get(el);
-      if (path) {
-        update(selectNode(S, path));
-        return;
+  overlayClk.addEventListener('click', (e) => {
+    const elements = withPanelPointerEvents(() =>
+      document.elementsFromPoint(e.clientX, e.clientY)
+    );
+    for (const el of elements) {
+      if (canvas.contains(el) && el !== canvas) {
+        const path = elToPath.get(el);
+        if (path) {
+          const newMedia = mediaName === 'base' ? null : (mediaName ?? null);
+          S = { ...S, ui: { ...S.ui, activeMedia: newMedia } };
+          update(selectNode(S, path));
+          return;
+        }
       }
     }
-  }
-  // Click on empty canvas = deselect
-  update(selectNode(S, null));
-});
+    update(selectNode(S, null));
+  });
 
-overlayClk.addEventListener('contextmenu', (e) => {
-  const elements = withCanvasPointerEvents(() =>
-    document.elementsFromPoint(e.clientX, e.clientY)
-  );
-
-  for (const el of elements) {
-    if (canvas.contains(el) && el !== canvas) {
-      const path = elToPath.get(el);
-      if (path) {
-        showContextMenu(e, path);
-        return;
+  overlayClk.addEventListener('contextmenu', (e) => {
+    const elements = withPanelPointerEvents(() =>
+      document.elementsFromPoint(e.clientX, e.clientY)
+    );
+    for (const el of elements) {
+      if (canvas.contains(el) && el !== canvas) {
+        const path = elToPath.get(el);
+        if (path) {
+          showContextMenu(e, path);
+          return;
+        }
       }
     }
-  }
-  e.preventDefault();
-});
+    e.preventDefault();
+  });
 
-overlayClk.addEventListener('mousemove', (e) => {
-  const el = withCanvasPointerEvents(() =>
-    document.elementFromPoint(e.clientX, e.clientY)
-  );
-
-  if (el && canvas.contains(el) && el !== canvas) {
-    const path = elToPath.get(el);
-    if (path && !pathsEqual(path, S.hover)) {
-      S = hoverNode(S, path);
+  overlayClk.addEventListener('mousemove', (e) => {
+    const el = withPanelPointerEvents(() =>
+      document.elementFromPoint(e.clientX, e.clientY)
+    );
+    if (el && canvas.contains(el) && el !== canvas) {
+      const path = elToPath.get(el);
+      if (path && !pathsEqual(path, S.hover)) {
+        S = hoverNode(S, path);
+        renderOverlays();
+      }
+    } else if (S.hover) {
+      S = hoverNode(S, null);
       renderOverlays();
     }
-  } else if (S.hover) {
-    S = hoverNode(S, null);
-    renderOverlays();
-  }
-});
+  });
 
-overlayClk.addEventListener('mouseleave', () => {
-  if (S.hover) {
-    S = hoverNode(S, null);
-    renderOverlays();
-  }
-});
+  overlayClk.addEventListener('mouseleave', () => {
+    if (S.hover) {
+      S = hoverNode(S, null);
+      renderOverlays();
+    }
+  });
+}
 
 // ─── Left panel: Layers ───────────────────────────────────────────────────────
 
@@ -833,16 +971,20 @@ function renderBlocks(container) {
       for (const { tag } of filtered) {
         const def = defaultDef(tag);
         const row = document.createElement('div');
-        row.className = 'layer-row block-row';
+        row.className = 'block-row';
 
-        const badge = document.createElement('span');
-        badge.className = 'layer-tag';
-        badge.textContent = tag;
-        row.appendChild(badge);
+        // Live preview of the element
+        const preview = document.createElement('div');
+        preview.className = 'block-preview';
+        const el = document.createElement(tag);
+        el.textContent = tag;
+        preview.appendChild(el);
+        row.appendChild(preview);
 
-        const lbl = document.createElement('span');
-        lbl.className = 'layer-label';
-        lbl.textContent = tag;
+        // Tag label below preview
+        const lbl = document.createElement('div');
+        lbl.className = 'block-label';
+        lbl.textContent = `<${tag}>`;
         row.appendChild(lbl);
 
         row.onclick = () => {
@@ -939,40 +1081,98 @@ function renderInspector(container) {
     return fields;
   });
 
-  // Style section
+  // Style section (media-tabbed)
   renderInspectorSection(container, 'Style', true, () => {
-    const fields = document.createElement('div');
-    fields.className = 'inspector-fields';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'inspector-fields';
     const style = node.style || {};
+    const { sizeBreakpoints } = parseMediaEntries(S.document.$media);
+    const mediaNames = sizeBreakpoints.map(bp => bp.name);
+    const activeTab = S.ui.activeMedia; // null = base
 
-    // Render existing style properties
-    for (const [prop, val] of Object.entries(style)) {
-      if (typeof val === 'object') continue; // skip nested selectors for now
-      fields.appendChild(kvRow(prop, String(val),
-        (newProp, newVal) => {
-          if (newProp !== prop) {
-            // Rename: remove old, add new
-            let s = updateStyle(S, S.selection, prop, undefined);
-            s = updateStyle(s, S.selection, newProp, newVal);
-            update(s);
-          } else {
-            update(updateStyle(S, S.selection, prop, newVal));
-          }
-        },
-        () => update(updateStyle(S, S.selection, prop, undefined)),
-        'css-props'
-      ));
+    // Media tabs (only if there are breakpoints)
+    if (mediaNames.length > 0) {
+      const tabs = document.createElement('div');
+      tabs.className = 'media-tabs';
+
+      const baseTab = document.createElement('div');
+      baseTab.className = `media-tab${activeTab === null ? ' active' : ''}`;
+      baseTab.textContent = 'Base';
+      baseTab.onclick = () => {
+        S = { ...S, ui: { ...S.ui, activeMedia: null } };
+        updateActivePanelHeaders();
+        renderRightPanel();
+      };
+      tabs.appendChild(baseTab);
+
+      for (const name of mediaNames) {
+        const tab = document.createElement('div');
+        tab.className = `media-tab${activeTab === name ? ' active' : ''}`;
+        tab.textContent = name;
+        tab.onclick = () => {
+          S = { ...S, ui: { ...S.ui, activeMedia: name } };
+          updateActivePanelHeaders();
+          renderRightPanel();
+        };
+        tabs.appendChild(tab);
+      }
+      wrapper.appendChild(tabs);
     }
 
-    // Add style button
-    const add = document.createElement('span');
-    add.className = 'kv-add';
-    add.textContent = '+ Add style';
-    add.onclick = () => {
-      update(updateStyle(S, S.selection, 'color', '#000'));
-    };
-    fields.appendChild(add);
-    return fields;
+    if (activeTab === null || mediaNames.length === 0) {
+      // Base styles: flat key-value pairs
+      for (const [prop, val] of Object.entries(style)) {
+        if (typeof val === 'object') continue;
+        wrapper.appendChild(kvRow(prop, String(val),
+          (newProp, newVal) => {
+            if (newProp !== prop) {
+              let s = updateStyle(S, S.selection, prop, undefined);
+              s = updateStyle(s, S.selection, newProp, newVal);
+              update(s);
+            } else {
+              update(updateStyle(S, S.selection, prop, newVal));
+            }
+          },
+          () => update(updateStyle(S, S.selection, prop, undefined)),
+          'css-props'
+        ));
+      }
+
+      const add = document.createElement('span');
+      add.className = 'kv-add';
+      add.textContent = '+ Add style';
+      add.onclick = () => update(updateStyle(S, S.selection, 'color', '#000'));
+      wrapper.appendChild(add);
+    } else {
+      // Media-specific styles: contents of @--name
+      const mediaKey = `@${activeTab}`;
+      const mediaStyles = style[mediaKey] || {};
+
+      for (const [prop, val] of Object.entries(mediaStyles)) {
+        if (typeof val === 'object') continue;
+        wrapper.appendChild(kvRow(prop, String(val),
+          (newProp, newVal) => {
+            if (newProp !== prop) {
+              let s = updateMediaStyle(S, S.selection, activeTab, prop, undefined);
+              s = updateMediaStyle(s, S.selection, activeTab, newProp, newVal);
+              update(s);
+            } else {
+              update(updateMediaStyle(S, S.selection, activeTab, prop, newVal));
+            }
+          },
+          () => update(updateMediaStyle(S, S.selection, activeTab, prop, undefined)),
+          'css-props'
+        ));
+      }
+
+      const add = document.createElement('span');
+      add.className = 'kv-add';
+      add.textContent = `+ Add ${activeTab} style`;
+      add.onclick = () => update(updateMediaStyle(S, S.selection, activeTab, 'color', '#000'));
+      wrapper.appendChild(add);
+    }
+
+    return wrapper;
   });
 
   // Attributes section
@@ -1005,6 +1205,37 @@ function renderInspector(container) {
     fields.appendChild(add);
     return fields;
   });
+
+  // Media breakpoints section (root only)
+  if (S.selection.length === 0) {
+    renderInspectorSection(container, 'Media', false, () => {
+      const fields = document.createElement('div');
+      fields.className = 'inspector-fields';
+      const media = node.$media || {};
+
+      for (const [name, query] of Object.entries(media)) {
+        fields.appendChild(kvRow(name, query,
+          (newName, newQuery) => {
+            if (newName !== name) {
+              let s = updateMedia(S, name, undefined);
+              s = updateMedia(s, newName, newQuery);
+              update(s);
+            } else {
+              update(updateMedia(S, name, newQuery));
+            }
+          },
+          () => update(updateMedia(S, name, undefined))
+        ));
+      }
+
+      const add = document.createElement('span');
+      add.className = 'kv-add';
+      add.textContent = '+ Add breakpoint';
+      add.onclick = () => update(updateMedia(S, '--bp', '(min-width: 768px)'));
+      fields.appendChild(add);
+      return fields;
+    });
+  }
 
   // Defs section (signals + handlers)
   if (S.selection.length === 0 && node.$defs) {
@@ -1225,7 +1456,7 @@ function renderToolbar() {
   const zoomGroup = group();
   zoomGroup.appendChild(tbBtn('−', () => {
     S = { ...S, ui: { ...S.ui, zoom: Math.max(0.25, S.ui.zoom - 0.25) } };
-    renderCanvas(); renderOverlays();
+    renderCanvas(); renderOverlays(); renderToolbar();
   }));
   const zoomLabel = document.createElement('span');
   zoomLabel.className = 'tb-filename';
@@ -1233,9 +1464,30 @@ function renderToolbar() {
   zoomGroup.appendChild(zoomLabel);
   zoomGroup.appendChild(tbBtn('+', () => {
     S = { ...S, ui: { ...S.ui, zoom: Math.min(4, S.ui.zoom + 0.25) } };
-    renderCanvas(); renderOverlays();
+    renderCanvas(); renderOverlays(); renderToolbar();
   }));
   toolbar.appendChild(zoomGroup);
+
+  // Feature toggles (non-size media queries like --dark)
+  const { featureQueries } = parseMediaEntries(S.document.$media);
+  if (featureQueries.length > 0) {
+    const toggleGroup = group();
+    for (const { name, query } of featureQueries) {
+      const btn = document.createElement('button');
+      btn.className = `tb-toggle${S.ui.featureToggles[name] ? ' active' : ''}`;
+      btn.textContent = name;
+      btn.title = query;
+      btn.onclick = () => {
+        const newToggles = { ...S.ui.featureToggles, [name]: !S.ui.featureToggles[name] };
+        S = { ...S, ui: { ...S.ui, featureToggles: newToggles } };
+        renderCanvas();
+        renderOverlays();
+        renderToolbar();
+      };
+      toggleGroup.appendChild(btn);
+    }
+    toolbar.appendChild(toggleGroup);
+  }
 
   // Spacer
   const spacer = document.createElement('div');

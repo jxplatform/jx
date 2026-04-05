@@ -34,11 +34,20 @@
     #right-panel { grid-row: 2; overflow-y: auto; background: var(--bg-panel); border-left: 1px solid var(--border); }
     #statusbar { grid-column: 1 / -1; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--fg-dim); background: var(--bg-panel); border-top: 1px solid var(--border); }
 
-    /* ─── Canvas ─────────────────────────────────── */
-    #canvas { padding: 16px; min-height: 100%; transform-origin: top left; }
-    #canvas * { cursor: default; }
-    #overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
-    #overlay-click { position: absolute; inset: 0; z-index: 9; cursor: default; }
+    /* ─── Canvas (multi-panel) ────────────────────── */
+    #canvas-wrap { display: flex; gap: 24px; padding: 16px; align-items: flex-start; }
+    .canvas-panel { flex-shrink: 0; }
+    .canvas-panel-header { padding: 4px 8px; font-size: 11px; color: var(--fg-dim); background: var(--bg-panel); border: 1px solid var(--border); border-bottom: none; border-radius: var(--radius) var(--radius) 0 0; text-align: center; cursor: pointer; user-select: none; font-family: 'SF Mono', 'Fira Code', monospace; }
+    .canvas-panel-header.active { color: var(--accent); border-color: var(--accent); }
+    .canvas-panel-viewport { position: relative; background: #fff; border: 1px solid var(--border); overflow: hidden; min-height: 200px; }
+    .canvas-panel-header.active + .canvas-panel-viewport { border-color: var(--accent); }
+    .canvas-panel-canvas { padding: 16px; min-height: 100%; }
+    .canvas-panel-canvas * { cursor: default; }
+    .canvas-panel-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+    .canvas-panel-click { position: absolute; inset: 0; z-index: 9; cursor: default; }
+    /* Single-canvas fallback (no $media) */
+    .canvas-panel.full-width { flex: 1; min-width: 0; }
+    .canvas-panel.full-width .canvas-panel-viewport { min-height: calc(100vh - 100px); }
     .overlay-box { position: absolute; pointer-events: none; }
     .overlay-selection { border: 2px solid var(--accent); }
     .overlay-hover { border: 1px solid rgba(0,122,204,0.5); }
@@ -69,7 +78,16 @@
     .layer-dot { font-size: 9px; flex-shrink: 0; }
     .layer-delete { visibility: hidden; cursor: pointer; color: var(--danger); font-size: 11px; flex-shrink: 0; }
     .layer-row:hover .layer-delete { visibility: visible; }
-    .block-row { cursor: grab; }
+    .block-row { cursor: grab; display: inline-flex; flex-direction: column; width: calc(50% - 6px); margin: 3px; vertical-align: top; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .block-row:hover { border-color: var(--accent); }
+    .block-preview { background: #fff; padding: 6px 8px; min-height: 32px; display: flex; align-items: center; overflow: hidden; pointer-events: none; }
+    .block-preview > * { max-width: 100%; font-size: 11px; color: #333; margin: 0; padding: 0; }
+    .block-preview > h1, .block-preview > h2, .block-preview > h3,
+    .block-preview > h4, .block-preview > h5, .block-preview > h6 { font-size: 13px; }
+    .block-preview > hr { width: 100%; border: none; border-top: 1px solid #999; }
+    .block-preview > input, .block-preview > textarea, .block-preview > select,
+    .block-preview > button, .block-preview > progress, .block-preview > meter { font-size: 10px; }
+    .block-label { padding: 2px 6px; font-size: 10px; color: var(--fg-dim); background: var(--bg-input); text-align: center; font-family: 'SF Mono', 'Fira Code', monospace; }
     .blocks-search { margin: 4px 8px; width: calc(100% - 16px); }
     .blocks-category { padding: 6px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); cursor: pointer; user-select: none; border-bottom: 1px solid var(--border); }
     .blocks-category::before { content: '▼'; margin-right: 6px; font-size: 8px; display: inline-block; transition: transform 0.15s; }
@@ -133,6 +151,17 @@
     /* ─── Empty state ────────────────────────────── */
     .empty-state { padding: 24px; text-align: center; color: var(--fg-dim); font-size: 13px; }
 
+    /* ─── Media tabs (inspector style section) ─────── */
+    .media-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 4px; overflow-x: auto; }
+    .media-tab { padding: 3px 8px; font-size: 10px; cursor: pointer; color: var(--fg-dim); border-bottom: 2px solid transparent; white-space: nowrap; font-family: 'SF Mono', 'Fira Code', monospace; }
+    .media-tab:hover { color: var(--fg); }
+    .media-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ─── Feature toggle (toolbar) ────────────────── */
+    .tb-toggle { padding: 3px 8px; font: inherit; font-size: 11px; color: var(--fg-dim); background: transparent; border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; }
+    .tb-toggle:hover { background: rgba(255,255,255,0.08); }
+    .tb-toggle.active { color: var(--accent); border-color: var(--accent); background: rgba(0,122,204,0.15); }
+
     /* ─── Context menu ────────────────────────────── */
     .ctx-menu { position: fixed; z-index: 100; min-width: 160px; padding: 4px 0; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
     .ctx-item { padding: 4px 12px; font-size: 12px; cursor: pointer; color: var(--fg); }
@@ -146,11 +175,7 @@
   <div id="app">
     <div id="toolbar"></div>
     <div id="left-panel"></div>
-    <div id="canvas-wrap">
-      <div id="canvas"></div>
-      <div id="overlay"></div>
-      <div id="overlay-click"></div>
-    </div>
+    <div id="canvas-wrap"></div>
     <div id="right-panel"></div>
     <div id="statusbar"></div>
   </div>
