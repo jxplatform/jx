@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run server.js"
+    "dev": "bun run server.js",
+    "compile": "bun run compile.js"
   },
   "dependencies": {
     "@jsonsx/runtime": "workspace:*",
     "@jsonsx/compiler": "workspace:*",
     "@jsonsx/parser": "workspace:*",
+    "@jsonsx/server": "workspace:*",
     "@jsonsx/studio": "workspace:*"
   }
 }

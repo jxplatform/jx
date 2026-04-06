@@ -10,6 +10,7 @@
         "@jsonsx/compiler": "workspace:*",
         "@jsonsx/parser": "workspace:*",
         "@jsonsx/runtime": "workspace:*",
+        "@jsonsx/server": "workspace:*",
         "@jsonsx/studio": "workspace:*",
       },
     },
@@ -64,6 +65,10 @@
         "@webref/idl": "^3.75.1",
       },
     },
+    "packages/server": {
+      "name": "@jsonsx/server",
+      "version": "1.0.0",
+    },
     "packages/studio": {
       "name": "@jsonsx/studio",
       "version": "1.0.0",
@@ -106,6 +111,8 @@
     "@jsonsx/runtime": ["@jsonsx/runtime@workspace:packages/runtime"],
 
     "@jsonsx/schema": ["@jsonsx/schema@workspace:packages/schema"],
+
+    "@jsonsx/server": ["@jsonsx/server@workspace:packages/server"],
 
     "@jsonsx/studio": ["@jsonsx/studio@workspace:packages/studio"],
 

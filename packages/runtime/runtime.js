@@ -816,10 +816,15 @@ async function resolveServerFunction(def, $defs, key, base) {
       mod = await import(src);
     } catch {
       if (base) {
-        const resolvedSrc = new URL(src, base).href;
-        mod = await import(resolvedSrc);
+        try {
+          const resolvedSrc = new URL(src, base).href;
+          mod = await import(resolvedSrc);
+        } catch {
+          // Module cannot run in the browser — fall back to dev server proxy
+          return resolveServerFunctionViaProxy(def, $defs, key, base);
+        }
       } else {
-        throw new Error(`JSONsx: failed to import '$src' "${src}" for "${key}"`);
+        return resolveServerFunctionViaProxy(def, $defs, key, base);
       }
     }
     _moduleCache.set(src, mod);
@@ -854,6 +859,59 @@ async function resolveServerFunction(def, $defs, key, base) {
   }
 
   return await fn(resolveArgs());
+}
+
+/**
+ * Dev-mode fallback: when a timing: "server" module cannot run in the browser,
+ * proxy the function call through the JSONsx dev server (POST /__jsonsx_server__).
+ * Supports reactive $ref arguments via Vue effect().
+ */
+async function resolveServerFunctionViaProxy(def, $defs, key, base) {
+  const rawArgs = def.arguments ?? {};
+  const hasReactiveArg = Object.values(rawArgs).some(v => isRefObj(v));
+
+  const resolveArgs = () => {
+    const args = {};
+    for (const [k, v] of Object.entries(rawArgs)) {
+      args[k] = isRefObj(v) ? resolveRef(v.$ref, $defs) : v;
+    }
+    return args;
+  };
+
+  const doResolve = (args) =>
+    fetch('/__jsonsx_server__', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        $src:    def.$src,
+        $export: def.$export,
+        $base:   base,
+        arguments: args,
+      }),
+    }).then(r => {
+      if (!r.ok) throw new Error(`JSONsx server proxy ${r.status} for "${key}"`);
+      return r.json();
+    });
+
+  if (def.signal) {
+    const state = ref(null);
+    if (hasReactiveArg) {
+      effect(() => {
+        const args = resolveArgs();
+        onEffectCleanup(() => {});
+        doResolve(args)
+          .then(result => { state.value = result; })
+          .catch(e => console.error('JSONsx server proxy:', e));
+      });
+    } else {
+      doResolve(resolveArgs())
+        .then(result => { state.value = result; })
+        .catch(e => console.error('JSONsx server proxy:', e));
+    }
+    return state;
+  }
+
+  return doResolve(resolveArgs());
 }
 
 /**
