@@ -405,6 +405,9 @@ function applyAttributes(el, attrs, $defs) {
 
 function renderMappedArray(def, $defs) {
   const container = document.createElement(def.tagName ?? 'div');
+  applyProperties(container, def, $defs);
+  applyStyle(container, def.style ?? {}, $defs['$media'] ?? {}, $defs);
+  applyAttributes(container, def.attributes ?? {}, $defs);
   const { items: itemsSrc, map: mapDef, filter: filterRef, sort: sortRef } = def.children;
 
   effect(() => {
@@ -441,6 +444,9 @@ function renderMappedArray(def, $defs) {
 
 function renderSwitch(def, $defs) {
   const container = document.createElement(def.tagName ?? 'div');
+  applyProperties(container, def, $defs);
+  applyStyle(container, def.style ?? {}, $defs['$media'] ?? {}, $defs);
+  applyAttributes(container, def.attributes ?? {}, $defs);
   let generation = 0;
 
   effect(() => {
