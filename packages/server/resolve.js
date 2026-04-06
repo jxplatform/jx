@@ -70,7 +70,7 @@ export async function handleServerFunction(req, root) {
   try { body = await req.json(); }
   catch { return new Response('Invalid JSON body', { status: 400 }); }
 
-  const { $src, $export: xport, $base, args = [] } = body;
+  const { $src, $export: xport, $base, arguments: args = {} } = body;
   if (!$src || !xport) return new Response('Missing $src or $export', { status: 400 });
 
   let moduleAbsPath;
@@ -96,7 +96,7 @@ export async function handleServerFunction(req, root) {
   }
 
   try {
-    const result = await fn(...args);
+    const result = await fn(args);
     return Response.json(result ?? null);
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
