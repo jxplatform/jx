@@ -1,30 +1,33 @@
 /**
- * fetch-demo.js — external functions for fetch-demo.json
+ * fetch-demo.js — computed functions for the live search demo.
  *
- * The user and posts Request prototypes auto-fetch at mount time.
- * These handlers change userId and manually re-fetch since the URL
- * is not yet composed from a signal reference.
+ * Complex computeds live here; simple handlers and one-liners
+ * are declared inline with `body` in fetch-demo.json.
  */
 
-export function prevUser($defs) {
-  const id = Math.max(1, $defs.userId - 1);
-  $defs.userId = id;
-  _refetch($defs, id);
+export function filteredPosts($defs) {
+  const posts = $defs.allPosts;
+  if (!Array.isArray(posts)) return [];
+  const term = ($defs.searchTerm || '').toLowerCase().trim();
+  const uid  = String($defs.selectedUserId || '');
+  return posts.filter(p =>
+    (!term || p.title.toLowerCase().includes(term) || p.body.toLowerCase().includes(term)) &&
+    (!uid  || String(p.userId) === uid)
+  );
 }
 
-export function nextUser($defs) {
-  const id = Math.min(10, $defs.userId + 1);
-  $defs.userId = id;
-  _refetch($defs, id);
+export function paginatedPosts($defs) {
+  const filtered = $defs.filteredPosts;
+  if (!Array.isArray(filtered)) return [];
+  const start = ($defs.currentPage - 1) * $defs.perPage;
+  return filtered.slice(start, start + $defs.perPage);
 }
 
-function _refetch($defs, id) {
-  const base = 'https://jsonplaceholder.typicode.com';
-  fetch(`${base}/users/${id}`)
-    .then(r => r.json())
-    .then(data => $defs.user = data);
-
-  fetch(`${base}/posts?userId=${id}`)
-    .then(r => r.json())
-    .then(data => $defs.posts = data);
+export function statsText($defs) {
+  if (!$defs.allPosts) return 'Loading…';
+  const total    = $defs.allPosts.length;
+  const filtered = ($defs.filteredPosts || []).length;
+  return ($defs.searchTerm || $defs.selectedUserId)
+    ? `${filtered} of ${total} posts`
+    : `${total} posts`;
 }

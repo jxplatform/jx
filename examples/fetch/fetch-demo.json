@@ -3,60 +3,87 @@
   "$id": "FetchDemo",
 
   "$defs": {
-    "userId": {
-      "type": "integer",
-      "default": 1,
-      "description": "Currently selected user ID (drives reactive fetch)"
-    },
+    "searchTerm":     { "type": "string",  "default": "" },
+    "selectedUserId": { "type": "string",  "default": "" },
+    "currentPage":    { "type": "integer", "default": 1 },
+    "perPage":        { "type": "integer", "default": 10 },
 
-    "user": {
+    "allPosts": {
       "$prototype": "Request",
-      "url": "https://jsonplaceholder.typicode.com/users/${$defs.userId}",
-      "method": "GET",
+      "url": "https://jsonplaceholder.typicode.com/posts",
       "timing": "client",
       "signal": true,
-      "description": "Reactive user fetch — re-fetches when URL changes"
+      "description": "All posts — fetched once on mount"
     },
-
-    "posts": {
+    "allUsers": {
       "$prototype": "Request",
-      "url": "https://jsonplaceholder.typicode.com/posts?userId=${$defs.userId}",
-      "method": "GET",
+      "url": "https://jsonplaceholder.typicode.com/users",
       "timing": "client",
       "signal": true,
-      "description": "Posts for the selected user"
+      "description": "All users — fetched once, used for author names"
     },
 
-    "userLabel": "${$defs.userId > 0 ? 'User #' + $defs.userId : 'Select a user'}",
-    "userDisplay": {
+    "userOptions": {
       "$prototype": "Function",
-      "body": "return JSON.stringify($defs.user, null, 2);",
+      "body": "const u = $defs.allUsers || []; return [{ id: '', name: 'All authors' }, ...u];",
+      "signal": true,
+      "description": "Options for the author filter select"
+    },
+    "filteredPosts": {
+      "$prototype": "Function",
+      "$src": "./fetch-demo.js",
+      "signal": true,
+      "description": "Posts filtered by searchTerm + selectedUserId"
+    },
+    "paginatedPosts": {
+      "$prototype": "Function",
+      "$src": "./fetch-demo.js",
+      "signal": true,
+      "description": "Current page slice of filteredPosts"
+    },
+    "totalPages": {
+      "$prototype": "Function",
+      "body": "const f = $defs.filteredPosts || []; return Math.max(1, Math.ceil(f.length / $defs.perPage));",
       "signal": true
     },
-    "postsDisplay": {
+    "statsText": {
       "$prototype": "Function",
-      "body": "return JSON.stringify($defs.posts, null, 2);",
+      "$src": "./fetch-demo.js",
       "signal": true
     },
 
-    "prevUser": {
+    "onSearch": {
       "$prototype": "Function",
-      "$src": "./fetch-demo.js",
-      "description": "Navigate to previous user"
+      "arguments": ["event"],
+      "body": "$defs.searchTerm = event.target.value; $defs.currentPage = 1;"
     },
-    "nextUser": {
+    "onUserFilter": {
       "$prototype": "Function",
-      "$src": "./fetch-demo.js",
-      "description": "Navigate to next user"
+      "arguments": ["event"],
+      "body": "$defs.selectedUserId = event.target.value; $defs.currentPage = 1;"
+    },
+    "prevPage": {
+      "$prototype": "Function",
+      "body": "if ($defs.currentPage > 1) $defs.currentPage--;"
+    },
+    "nextPage": {
+      "$prototype": "Function",
+      "body": "if ($defs.currentPage < $defs.totalPages) $defs.currentPage++;"
+    },
+    "clearSearch": {
+      "$prototype": "Function",
+      "body": "$defs.searchTerm = ''; $defs.selectedUserId = ''; $defs.currentPage = 1;"
     }
   },
 
-  "tagName": "fetch-demo",
+  "tagName": "div",
   "style": {
-    "display": "block",
-    "maxWidth": "640px",
-    "margin": "2rem auto",
-    "fontFamily": "system-ui, sans-serif"
+    "fontFamily": "system-ui, sans-serif",
+    "background": "#f8f9fa",
+    "minHeight": "100vh",
+    "padding": "2em",
+    "margin": "0",
+    "boxSizing": "border-box"
   },
 
   "children": [
@@ -67,111 +94,198 @@
     },
     {
       "tagName": "p",
-      "textContent": "Request prototypes auto-fetch when declared. Switch users to see reactive re-fetch.",
-      "style": { "color": "#6c757d", "marginBottom": "1.5em", "fontSize": "0.9em" }
+      "textContent": "allPosts and allUsers are Request prototypes — they auto-fetch on mount. filteredPosts and paginatedPosts are computed signals that update reactively as you type or filter.",
+      "style": { "color": "#6c757d", "margin": "0 0 1.5em", "fontSize": "0.9em", "maxWidth": "640px" }
     },
 
     {
       "tagName": "div",
       "style": {
+        "maxWidth": "640px",
         "display": "flex",
+        "gap": "0.5em",
+        "marginBottom": "0.5em"
+      },
+      "children": [
+        {
+          "tagName": "input",
+          "value": "${$defs.searchTerm}",
+          "attributes": { "type": "text", "placeholder": "Search titles and content…" },
+          "oninput": { "$ref": "#/$defs/onSearch" },
+          "style": {
+            "flex": "1",
+            "padding": "0.5em 0.75em",
+            "border": "1px solid #ced4da",
+            "borderRadius": "4px",
+            "fontSize": "0.9em",
+            "outline": "none",
+            ":focus": { "borderColor": "#007bff", "boxShadow": "0 0 0 2px rgba(0,123,255,0.15)" }
+          }
+        },
+        {
+          "tagName": "select",
+          "value": "${$defs.selectedUserId}",
+          "onchange": { "$ref": "#/$defs/onUserFilter" },
+          "style": {
+            "padding": "0.5em 0.5em",
+            "border": "1px solid #ced4da",
+            "borderRadius": "4px",
+            "fontSize": "0.9em",
+            "backgroundColor": "white",
+            "cursor": "pointer"
+          },
+          "children": {
+            "$prototype": "Array",
+            "items": { "$ref": "#/$defs/userOptions" },
+            "map": {
+              "tagName": "option",
+              "textContent": "${$map.item.name}",
+              "attributes": { "value": "${$map.item.id}" }
+            }
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Clear",
+          "onclick": { "$ref": "#/$defs/clearSearch" },
+          "style": {
+            "padding": "0.5em 0.9em",
+            "border": "1px solid #ced4da",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "cursor": "pointer",
+            "fontSize": "0.9em",
+            ":hover": { "backgroundColor": "#f8f9fa", "borderColor": "#adb5bd" }
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "div",
+      "textContent": { "$ref": "#/$defs/statsText" },
+      "style": {
+        "maxWidth": "640px",
+        "fontSize": "0.8em",
+        "color": "#6c757d",
+        "marginBottom": "1em"
+      }
+    },
+
+    {
+      "tagName": "div",
+      "style": { "maxWidth": "640px", "marginBottom": "1em" },
+      "children": {
+        "$prototype": "Array",
+        "items": { "$ref": "#/$defs/paginatedPosts" },
+        "map": {
+          "tagName": "div",
+          "style": {
+            "backgroundColor": "white",
+            "border": "1px solid #dee2e6",
+            "borderRadius": "6px",
+            "padding": "0.875em 1.125em",
+            "marginBottom": "0.625em"
+          },
+          "children": [
+            {
+              "tagName": "div",
+              "style": {
+                "display": "flex",
+                "justifyContent": "space-between",
+                "alignItems": "baseline",
+                "gap": "0.5em",
+                "marginBottom": "0.4em"
+              },
+              "children": [
+                {
+                  "tagName": "h3",
+                  "textContent": "${$map.item.title}",
+                  "style": {
+                    "margin": "0",
+                    "fontSize": "0.9375em",
+                    "color": "#212529",
+                    "fontWeight": "600",
+                    "textTransform": "capitalize"
+                  }
+                },
+                {
+                  "tagName": "span",
+                  "textContent": "#${$map.item.id}",
+                  "style": {
+                    "fontSize": "0.75em",
+                    "color": "#adb5bd",
+                    "flexShrink": "0"
+                  }
+                }
+              ]
+            },
+            {
+              "tagName": "p",
+              "textContent": "${($map.item.body||'').slice(0,120)}\u2026",
+              "style": {
+                "margin": "0 0 0.5em",
+                "fontSize": "0.8375em",
+                "color": "#6c757d",
+                "lineHeight": "1.5"
+              }
+            },
+            {
+              "tagName": "span",
+              "textContent": "${(($defs.allUsers||[]).find(u=>u.id===$map.item.userId)||{name:'User '+$map.item.userId}).name}",
+              "style": {
+                "fontSize": "0.775em",
+                "color": "#007bff",
+                "fontWeight": "500"
+              }
+            }
+          ]
+        }
+      }
+    },
+
+    {
+      "tagName": "div",
+      "style": {
+        "maxWidth": "640px",
+        "display": "${$defs.totalPages > 1 ? 'flex' : 'none'}",
         "alignItems": "center",
-        "gap": "0.75em",
-        "marginBottom": "1.5em"
+        "justifyContent": "center",
+        "gap": "0.75em"
       },
       "children": [
         {
           "tagName": "button",
           "textContent": "\u2190 Prev",
-          "onclick": { "$ref": "#/$defs/prevUser" },
+          "onclick": { "$ref": "#/$defs/prevPage" },
           "style": {
             "padding": "0.4em 0.9em",
-            "border": "1px solid #adb5bd",
+            "border": "1px solid #ced4da",
             "borderRadius": "4px",
             "backgroundColor": "white",
-            "cursor": "pointer",
-            ":hover": { "backgroundColor": "#f8f9fa" }
+            "fontSize": "0.875em",
+            "opacity": "${$defs.currentPage <= 1 ? '0.4' : '1'}",
+            "cursor": "${$defs.currentPage <= 1 ? 'default' : 'pointer'}"
           }
         },
         {
-          "tagName": "strong",
-          "textContent": { "$ref": "#/$defs/userLabel" },
-          "style": { "minWidth": "7em", "textAlign": "center" }
+          "tagName": "span",
+          "textContent": "Page ${$defs.currentPage} of ${$defs.totalPages}",
+          "style": { "fontSize": "0.875em", "color": "#6c757d" }
         },
         {
           "tagName": "button",
           "textContent": "Next \u2192",
-          "onclick": { "$ref": "#/$defs/nextUser" },
+          "onclick": { "$ref": "#/$defs/nextPage" },
           "style": {
             "padding": "0.4em 0.9em",
             "border": "none",
             "borderRadius": "4px",
             "backgroundColor": "#007bff",
             "color": "white",
-            "cursor": "pointer",
-            ":hover": { "backgroundColor": "#0056b3" }
-          }
-        }
-      ]
-    },
-
-    {
-      "tagName": "div",
-      "style": {
-        "backgroundColor": "white",
-        "border": "1px solid #dee2e6",
-        "borderRadius": "8px",
-        "padding": "1.25em",
-        "marginBottom": "1.5em"
-      },
-      "children": [
-        {
-          "tagName": "h3",
-          "textContent": "User Profile",
-          "style": { "margin": "0 0 0.75em", "color": "#495057", "fontSize": "1em", "textTransform": "uppercase", "letterSpacing": "0.05em" }
-        },
-        {
-          "tagName": "pre",
-          "textContent": { "$ref": "#/$defs/userDisplay" },
-          "style": {
-            "margin": "0",
-            "padding": "0.75em",
-            "backgroundColor": "#f8f9fa",
-            "borderRadius": "4px",
-            "fontSize": "0.8em",
-            "overflow": "auto",
-            "color": "#333"
-          }
-        }
-      ]
-    },
-
-    {
-      "tagName": "div",
-      "style": {
-        "backgroundColor": "white",
-        "border": "1px solid #dee2e6",
-        "borderRadius": "8px",
-        "padding": "1.25em"
-      },
-      "children": [
-        {
-          "tagName": "h3",
-          "textContent": "Posts",
-          "style": { "margin": "0 0 0.75em", "color": "#495057", "fontSize": "1em", "textTransform": "uppercase", "letterSpacing": "0.05em" }
-        },
-        {
-          "tagName": "pre",
-          "textContent": { "$ref": "#/$defs/postsDisplay" },
-          "style": {
-            "margin": "0",
-            "padding": "0.75em",
-            "backgroundColor": "#f8f9fa",
-            "borderRadius": "4px",
-            "fontSize": "0.8em",
-            "overflow": "auto",
-            "maxHeight": "300px",
-            "color": "#333"
+            "fontSize": "0.875em",
+            "opacity": "${$defs.currentPage >= $defs.totalPages ? '0.4' : '1'}",
+            "cursor": "${$defs.currentPage >= $defs.totalPages ? 'default' : 'pointer'}"
           }
         }
       ]
