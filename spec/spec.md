@@ -1,8 +1,8 @@
 # JSONsx Specification
 ## Declarative Document Object Model — JSON Edition
 
-**Version:** 0.8.0-draft  
-**Status:** In Progress  
+**Version:** 0.9.0-draft
+**Status:** In Progress
 **License:** MIT
 
 ---
@@ -20,14 +20,15 @@
 9. [Event Handlers](#9-event-handlers)
 10. [Dynamic Mapped Arrays](#10-dynamic-mapped-arrays)
 11. [Web API Namespaces](#11-web-api-namespaces)
-12. [Component Encapsulation](#12-component-encapsulation)
-13. [Computed Expressions](#13-computed-expressions)
-14. [Dynamic Component Switching](#14-dynamic-component-switching)
-15. [Scope Rules](#15-scope-rules)
-16. [Compilation Model](#16-compilation-model)
-17. [Runtime Pipeline](#17-runtime-pipeline)
-18. [Reserved Keywords](#18-reserved-keywords)
-19. [Standards Alignment](#19-standards-alignment)
+12. [External Class Integration](#12-external-class-integration)
+13. [Component Encapsulation](#13-component-encapsulation)
+14. [Computed Expressions](#14-computed-expressions)
+15. [Dynamic Component Switching](#15-dynamic-component-switching)
+16. [Scope Rules](#16-scope-rules)
+17. [Compilation Model](#17-compilation-model)
+18. [Runtime Pipeline](#18-runtime-pipeline)
+19. [Reserved Keywords](#19-reserved-keywords)
+20. [Standards Alignment](#20-standards-alignment)
 
 ---
 
@@ -123,7 +124,7 @@ Every JSONsx document is a JSON object with the following top-level fields:
 
 JSONsx is a JSON Schema dialect. Documents may be validated against the JSONsx meta-schema using any JSON Schema 2020-12 compatible validator. The `$schema` URI identifies the dialect version and enables schema-aware tooling.
 
-JSONsx extends the base JSON Schema vocabulary with the following reserved keywords: `$handlers`, `$prototype`, `$handler`, `$compute`, `$deps`, `$props`, `$switch`, `$map`, `signal`, `timing`.
+JSONsx extends the base JSON Schema vocabulary with the following reserved keywords: `$handlers`, `$prototype`, `$handler`, `$compute`, `$deps`, `$props`, `$switch`, `$map`, `$src`, `$export`, `signal`, `timing`.
 
 ---
 
@@ -626,7 +627,112 @@ The `timing` field controls when a `Request` prototype executes:
 
 ---
 
-## 12. Component Encapsulation
+## 12. External Class Integration
+
+### 12.1 The `$src` Property on `$defs` Entries
+
+`$src` is an optional property on any `$defs` entry that carries a `$prototype` value. When present, the runtime resolves `$prototype` as a named export from the specified module rather than from the built-in prototype registry:
+
+```json
+{
+  "$defs": {
+    "$posts": {
+      "$prototype": "MarkdownCollection",
+      "$src": "@jsonsx/md",
+      "src": "./content/posts/*.md",
+      "timing": "server",
+      "signal": true
+    }
+  }
+}
+```
+
+The `$src` value is a module specifier string following the same resolution semantics as `$handlers`:
+
+| Specifier form | Example | Resolution |
+|---|---|---|
+| Relative path | `"./lib/my-class.js"` | Relative to the `.json` file |
+| Absolute URL | `"https://cdn.example.com/parser.js"` | Fetched directly |
+| npm specifier | `"npm:@jsonsx/md"` | Resolved via npm resolver |
+| Package name | `"@jsonsx/md"` | Resolved via npm resolver |
+
+By default, the runtime looks for a named export matching `$prototype` in the resolved module. An optional `$export` property overrides the export name when the class is exported under a different name.
+
+When `$src` is absent, resolution falls through to the built-in prototype registry unchanged.
+
+### 12.2 External Class Contract
+
+Any class used as a JSONsx prototype via `$src` must satisfy the following contract:
+
+**Constructor:** The class constructor receives a single configuration object containing all `$defs` properties except the JSONsx-reserved keywords (`$prototype`, `$src`, `$export`, `signal`, `timing`, `$compute`, `$deps`):
+
+```js
+// Given: { "$prototype": "MyParser", "$src": "./parser.js", "src": "./data.md", "signal": true }
+// Runtime calls: new MyParser({ src: "./data.md" })
+```
+
+**Value resolution:** The runtime obtains the signal's initial value by checking in order:
+
+1. `instance.resolve()` — async method, awaited. Preferred for async sources.
+2. `instance.value` — synchronous getter or property.
+3. `instance` itself — fallback if neither above is present.
+
+**Reactivity (optional):** Classes wanting to push updates may implement:
+
+```js
+instance.subscribe(callback)  // called with new value on data change
+instance.unsubscribe()        // cleanup on signal disposal
+```
+
+### 12.3 Resolution Algorithm
+
+```
+Given $prototype: "MyClass" and $src: "./lib/my-class.js":
+
+1. Check module cache for $src specifier
+2. If not cached: import($src resolved relative to .json file), cache result
+3. Extract export: module[$export] if set, else module[$prototype]
+4. Verify export is a constructor (typeof === 'function')
+5. Strip JSONsx-reserved properties to produce config object
+6. Instantiate: new ExportedClass(config)
+7. Resolve value: await resolve() → .value → instance
+8. Wrap in signal and register in component scope
+```
+
+### 12.4 Signal Wrapping
+
+Signal wrapping for external classes follows the same rules as built-in prototypes:
+
+| `signal` | `timing` | `subscribe` present | Result |
+|---|---|---|---|
+| `true` | `"server"` | — | Resolved at build time, baked as static value |
+| `true` | `"client"` (default) | No | `Signal.State`, initialized with resolved value |
+| `true` | `"client"` | Yes | `Signal.State`, updated via `subscribe()` |
+| `false` / absent | — | — | Resolved once, not wrapped in signal |
+
+### 12.5 Extended `$prototype` Registry
+
+| `$prototype` | Source | Notes |
+|---|---|---|
+| `Request` | Built-in | Fetch API integration |
+| `URLSearchParams` | Built-in | Reactive query string |
+| `FormData` | Built-in | Reactive form data |
+| `LocalStorage` | Built-in | Reactive persistent storage |
+| `SessionStorage` | Built-in | Reactive session storage |
+| `Cookie` | Built-in | Reactive cookie access |
+| `IndexedDB` | Built-in | Reactive IDB database |
+| `Array` | Built-in | Reactive mapped list |
+| `Set` | Built-in | Reactive Set collection |
+| `Map` | Built-in | Reactive Map collection |
+| `Blob` | Built-in | Reactive binary data |
+| `ReadableStream` | Built-in | Reactive stream |
+| *Any other name* | `$src` required | External class |
+
+When `$prototype` is not in the built-in registry and `$src` is absent, the runtime throws: `"Unknown $prototype 'X'. Did you mean to add '$src'?"`.
+
+---
+
+## 13. Component Encapsulation
 
 ### 12.1 External Component References
 
@@ -698,7 +804,7 @@ An `npm:` URI scheme resolver may be registered with the ref-parser to support n
 
 ---
 
-## 13. Computed Expressions
+## 14. Computed Expressions
 
 ### 13.1 JSONata Expressions
 
@@ -744,7 +850,7 @@ This boundary is not enforced at runtime but is a recommended practice and may b
 
 ---
 
-## 14. Dynamic Component Switching
+## 15. Dynamic Component Switching
 
 ### 14.1 `$switch` Syntax
 
@@ -772,7 +878,7 @@ Because all cases are declared statically in the JSON, the compiler has full kno
 
 ---
 
-## 15. Scope Rules
+## 16. Scope Rules
 
 ### 15.1 Scope Levels
 
@@ -804,7 +910,7 @@ When resolving a `$ref` at runtime, the following order applies:
 
 ---
 
-## 16. Compilation Model
+## 17. Compilation Model
 
 ### 16.1 Static Detection
 
@@ -853,7 +959,7 @@ Because all `$handlers` paths and `$ref` component references are explicit strin
 
 ---
 
-## 17. Runtime Pipeline
+## 18. Runtime Pipeline
 
 The JSONsx runtime processes a document in four sequential steps:
 
@@ -894,7 +1000,7 @@ The rendered element tree is appended to the target container. For SSR/compilati
 
 ---
 
-## 18. Reserved Keywords
+## 19. Reserved Keywords
 
 The following keys have special meaning in JSONsx and may not be used as element property names:
 
@@ -908,6 +1014,8 @@ The following keys have special meaning in JSONsx and may not be used as element
 | `$props` | Explicit prop passing at component boundary |
 | `$prototype` | Web API namespace identifier |
 | `$handler` | Marks a `$defs` entry as a handler declaration |
+| `$src` | Module specifier for external class resolution |
+| `$export` | Override export name for external class |
 | `$compute` | JSONata expression for computed signals |
 | `$deps` | Dependency list for computed signals |
 | `$switch` | Dynamic component switching |
@@ -919,7 +1027,7 @@ The following keys have special meaning in JSONsx and may not be used as element
 
 ---
 
-## 19. Standards Alignment
+## 20. Standards Alignment
 
 ### 19.1 JSON Schema 2020-12
 
@@ -1065,4 +1173,4 @@ When creating a new JSONsx component:
 
 ---
 
-*JSONsx Specification v0.8.0-draft — subject to revision*
+*JSONsx Specification v0.9.0-draft — subject to revision*

@@ -76,12 +76,12 @@ export async function buildScope(doc, parentScope = {}, base = location.href) {
       if (def.$compute) {
         scope[key] = makeComputedSignal(def.$compute, def.$deps ?? [], scope);
       } else if (def.$prototype) {
-        scope[key] = resolvePrototype(def, scope, key);
+        scope[key] = await resolvePrototype(def, scope, key, base);
       } else {
         scope[key] = new Signal.State(def.default ?? null);
       }
     } else if (def.$prototype) {
-      scope[key] = resolvePrototype(def, scope, key);
+      scope[key] = await resolvePrototype(def, scope, key, base);
     }
   }
 
@@ -137,7 +137,7 @@ function makeComputedSignal(expression, depKeys, scope) {
 export const RESERVED_KEYS = new Set([
   '$schema', '$id', '$defs', '$handlers', '$ref', '$props',
   '$switch', '$prototype', '$handler', '$compute', '$deps',
-  '$media',
+  '$media', '$src', '$export',
   'signal', 'timing', 'default', 'description',
   'tagName', 'children', 'style', 'attributes',
   'items', 'map', 'filter', 'sort', 'cases',
@@ -161,7 +161,10 @@ export function renderNode(def, scope) {
     }
   }
 
-  if (def.$props)                           return renderNode(def, mergeProps(def, localScope));
+  if (def.$props) {
+    const { $props, ...rest } = def;
+    return renderNode(rest, mergeProps(def, localScope));
+  }
   if (def.$switch)                          return renderSwitch(def, localScope);
   if (def.children?.$prototype === 'Array') return renderMappedArray(def, localScope);
 
@@ -329,14 +332,22 @@ function renderSwitch(def, scope) {
 // ─── Prototype namespaces ─────────────────────────────────────────────────────
 
 /**
- * Resolve a $prototype definition into a reactive signal wrapping a Web API.
+ * Resolve a $prototype definition into a reactive signal wrapping a Web API
+ * or an external class loaded via $src.
  *
  * @param {object} def   - $defs entry with $prototype
  * @param {object} scope
  * @param {string} key   - def key (for diagnostics)
- * @returns {Signal.State}
+ * @param {string} [base] - Base URL for resolving $src imports
+ * @returns {Promise<Signal.State>|Signal.State}
  */
-export function resolvePrototype(def, scope, key) {
+export async function resolvePrototype(def, scope, key, base) {
+
+  // ── External class via $src ─────────────────────────────────────────────────
+  if (def.$src) {
+    return resolveExternalPrototype(def, scope, key, base);
+  }
+
   switch (def.$prototype) {
 
     case 'Request': {
@@ -442,9 +453,92 @@ export function resolvePrototype(def, scope, key) {
       return new Signal.State(null);
 
     default:
-      console.warn(`JSONsx: unknown $prototype "${def.$prototype}" for "${key}"`);
+      console.warn(`JSONsx: unknown $prototype "${def.$prototype}" for "${key}". Did you mean to add '$src'?`);
       return new Signal.State(null);
   }
+}
+
+// ─── Module cache for $src imports ────────────────────────────────────────────
+
+const _moduleCache = new Map();
+
+/**
+ * Reserved keys stripped from the config object passed to external class constructors.
+ */
+const EXTERNAL_RESERVED = new Set([
+  '$prototype', '$src', '$export', 'signal', 'timing',
+  '$compute', '$deps', 'default', 'description',
+]);
+
+/**
+ * Resolve an external class prototype via $src.
+ *
+ * @param {object} def   - $defs entry with $prototype and $src
+ * @param {object} scope
+ * @param {string} key   - def key (for diagnostics)
+ * @param {string} [base] - Base URL for resolving relative $src paths
+ * @returns {Promise<Signal.State>}
+ */
+async function resolveExternalPrototype(def, scope, key, base) {
+  const src = def.$src;
+  const exportName = def.$export ?? def.$prototype;
+
+  // 1. Import module (with cache)
+  let mod;
+  if (_moduleCache.has(src)) {
+    mod = _moduleCache.get(src);
+  } else {
+    try {
+      mod = await import(src);
+    } catch {
+      // Try resolving relative to base
+      if (base) {
+        const resolvedSrc = new URL(src, base).href;
+        mod = await import(resolvedSrc);
+      } else {
+        throw new Error(`JSONsx: failed to import '$src' "${src}" for "${key}"`);
+      }
+    }
+    _moduleCache.set(src, mod);
+  }
+
+  // 2. Extract export
+  const ExportedClass = mod[exportName] ?? mod.default?.[exportName];
+  if (!ExportedClass) {
+    throw new Error(`JSONsx: export "${exportName}" not found in "${src}"`);
+  }
+  if (typeof ExportedClass !== 'function') {
+    throw new Error(`JSONsx: "${exportName}" from "${src}" is not a class`);
+  }
+
+  // 3. Build config (strip reserved keys)
+  const config = {};
+  for (const [k, v] of Object.entries(def)) {
+    if (!EXTERNAL_RESERVED.has(k)) config[k] = v;
+  }
+
+  // 4. Instantiate
+  const instance = new ExportedClass(config);
+
+  // 5. Resolve value
+  let value;
+  if (typeof instance.resolve === 'function') {
+    value = await instance.resolve();
+  } else if ('value' in instance) {
+    value = instance.value;
+  } else {
+    value = instance;
+  }
+
+  // 6. Wrap in signal
+  const state = new Signal.State(value);
+
+  // 7. Subscribe for reactivity if available
+  if (typeof instance.subscribe === 'function') {
+    instance.subscribe((newVal) => state.set(newVal));
+  }
+
+  return state;
 }
 
 // ─── $ref resolution ─────────────────────────────────────────────────────────

@@ -1,3 +1,6 @@
+import { GlobalRegistrator } from '@happy-dom/global-registrator';
+try { GlobalRegistrator.register(); } catch { /* already registered by effect.test.js */ }
+
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { Signal } from 'signal-polyfill';
 import {
@@ -61,6 +64,7 @@ describe('RESERVED_KEYS', () => {
   test('is a Set', () => expect(RESERVED_KEYS).toBeInstanceOf(Set));
   const required = ['$schema', '$id', '$defs', '$handlers', '$ref', '$props',
     '$switch', '$prototype', '$handler', '$compute', '$deps', '$media',
+    '$src', '$export',
     'signal', 'timing', 'default', 'tagName', 'children', 'style', 'attributes',
     'items', 'map', 'filter', 'sort', 'cases'];
   for (const k of required) {
@@ -172,13 +176,14 @@ describe('buildScope', () => {
     const doc = {
       $defs: {
         $n:  { signal: true, default: 3 },
-        $d:  { $compute: 'n * 2', $deps: ['#/$defs/$n'], signal: true },
+        // JSONata bindings: runtime strips '$' → binds as 'n'; expression uses '$n'
+        $d:  { $compute: '$n * 2', $deps: ['#/$defs/$n'], signal: true },
       },
     };
     const scope = await buildScope(doc, {}, 'http://localhost/');
     expect(isSignal(scope['$d'])).toBe(true);
-    // JSONata.evaluate() is async — wait for effect to flush and Promise to resolve
-    await new Promise(r => setTimeout(r, 50));
+    // Pump microtask queue to let JSONata.evaluate() Promise resolve
+    for (let i = 0; i < 50; i++) await Promise.resolve();
     expect(scope['$d'].get()).toBe(6);
   });
 
@@ -207,8 +212,8 @@ describe('buildScope', () => {
   });
 
   test('loads $handlers and merges exports', async () => {
-    const dataUrl = 'data:text/javascript,export default { myFn() { return 42; } }';
-    const scope = await buildScope({ $handlers: dataUrl }, {}, 'http://localhost/');
+    const handlersUrl = new URL('./_test_handlers_fn.js', import.meta.url).href;
+    const scope = await buildScope({ $handlers: handlersUrl }, {}, 'http://localhost/');
     expect(typeof scope['myFn']).toBe('function');
   });
 });
@@ -241,7 +246,9 @@ describe('applyStyle', () => {
     const uid = el.dataset.jsonsx;
     const style = document.head.querySelector('style');
     expect(style).not.toBeNull();
-    expect(style.textContent).toContain(`[data-jsonsx="${uid}"]:hover`);
+    // :sel → "[data-jsonsx="uid"] :hover" (space-separated — targets descendants)
+    // Use &:hover for self-pseudo (no space)
+    expect(style.textContent).toContain(`[data-jsonsx="${uid}"] :hover`);
     expect(style.textContent).toContain('color: blue');
   });
 
@@ -296,7 +303,7 @@ describe('applyStyle', () => {
     );
     expect(el.style.color).toBe('green');
     const style = document.head.querySelector('style');
-    expect(style.textContent).toContain(':focus');
+    expect(style.textContent).toContain('] :focus'); // :focus as descendant pseudo
     expect(style.textContent).toContain('@media (min-width: 640px)');
   });
 });
@@ -309,7 +316,7 @@ describe('resolvePrototype', () => {
       ok: true,
       json: () => Promise.resolve({ id: 1 }),
     }));
-    const sig = resolvePrototype({ $prototype: 'Request', url: '/api/test' }, {}, '$data');
+    const sig = await resolvePrototype({ $prototype: 'Request', url: '/api/test' }, {}, '$data');
     expect(isSignal(sig)).toBe(true);
     await wait();
     expect(sig.get()).toEqual({ id: 1 });
@@ -318,7 +325,7 @@ describe('resolvePrototype', () => {
   test('Request: manual:true does not auto-fetch', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
     global.fetch = fetchMock;
-    resolvePrototype({ $prototype: 'Request', url: '/api/x', manual: true }, {}, '$x');
+    await resolvePrototype({ $prototype: 'Request', url: '/api/x', manual: true }, {}, '$x');
     await wait();
     expect(fetchMock.mock.calls.length).toBe(0);
   });
@@ -328,7 +335,7 @@ describe('resolvePrototype', () => {
       ok: true,
       json: () => Promise.resolve({ n: 2 }),
     }));
-    const sig = resolvePrototype({ $prototype: 'Request', url: '/api/y', manual: true }, {}, '$y');
+    const sig = await resolvePrototype({ $prototype: 'Request', url: '/api/y', manual: true }, {}, '$y');
     sig.fetch();
     await wait();
     expect(sig.get()).toEqual({ n: 2 });
@@ -340,7 +347,7 @@ describe('resolvePrototype', () => {
       statusText: 'Not Found',
       json: () => Promise.resolve({}),
     }));
-    const sig = resolvePrototype({ $prototype: 'Request', url: '/api/z' }, {}, '$z');
+    const sig = await resolvePrototype({ $prototype: 'Request', url: '/api/z' }, {}, '$z');
     await wait();
     expect(sig.get()).toHaveProperty('error');
   });
@@ -348,7 +355,7 @@ describe('resolvePrototype', () => {
   test('Request: skips fetch when url resolves to undefined', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
     global.fetch = fetchMock;
-    resolvePrototype({ $prototype: 'Request', url: undefined }, {}, '$r');
+    await resolvePrototype({ $prototype: 'Request', url: undefined }, {}, '$r');
     await wait();
     expect(fetchMock.mock.calls.length).toBe(0);
   });
@@ -356,54 +363,54 @@ describe('resolvePrototype', () => {
   test('Request: POST with headers and body', async () => {
     let captured;
     global.fetch = mock((_url, opts) => { captured = opts; return Promise.resolve({ ok: true, json: () => Promise.resolve({}) }); });
-    resolvePrototype({ $prototype: 'Request', url: '/api', method: 'POST', headers: { 'x': '1' }, body: { a: 1 } }, {}, '$r');
+    await resolvePrototype({ $prototype: 'Request', url: '/api', method: 'POST', headers: { 'x': '1' }, body: { a: 1 } }, {}, '$r');
     await wait();
     expect(captured.method).toBe('POST');
     expect(captured.headers).toEqual({ x: '1' });
     expect(captured.body).toBe('{"a":1}');
   });
 
-  test('URLSearchParams: returns computed signal', () => {
+  test('URLSearchParams: returns computed signal', async () => {
     const scope = { $q: mkState('hello') };
-    const sig = resolvePrototype({ $prototype: 'URLSearchParams', q: { $ref: '#/$defs/$q' } }, scope, '$params');
+    const sig = await resolvePrototype({ $prototype: 'URLSearchParams', q: { $ref: '#/$defs/$q' } }, scope, '$params');
     expect(sig).toBeInstanceOf(Signal.Computed);
   });
 
-  test('LocalStorage: reads existing value', () => {
+  test('LocalStorage: reads existing value', async () => {
     localStorage.setItem('lsKey', JSON.stringify(99));
-    const sig = resolvePrototype({ $prototype: 'LocalStorage', key: 'lsKey' }, {}, '$ls');
+    const sig = await resolvePrototype({ $prototype: 'LocalStorage', key: 'lsKey' }, {}, '$ls');
     expect(sig.get()).toBe(99);
     localStorage.removeItem('lsKey');
   });
 
-  test('LocalStorage: defaults to def.default when key absent', () => {
+  test('LocalStorage: defaults to def.default when key absent', async () => {
     localStorage.removeItem('lsMissing');
-    const sig = resolvePrototype({ $prototype: 'LocalStorage', key: 'lsMissing', default: 'fallback' }, {}, '$ls');
+    const sig = await resolvePrototype({ $prototype: 'LocalStorage', key: 'lsMissing', default: 'fallback' }, {}, '$ls');
     expect(sig.get()).toBe('fallback');
   });
 
-  test('LocalStorage: uses def key name when key prop absent', () => {
-    const sig = resolvePrototype({ $prototype: 'LocalStorage', default: 'x' }, {}, 'myKey');
+  test('LocalStorage: uses def key name when key prop absent', async () => {
+    const sig = await resolvePrototype({ $prototype: 'LocalStorage', default: 'x' }, {}, 'myKey');
     expect(sig.get()).toBe('x');
   });
 
-  test('LocalStorage: .set() persists to storage', () => {
-    const sig = resolvePrototype({ $prototype: 'LocalStorage', key: 'lsPersist', default: 0 }, {}, '$ls');
+  test('LocalStorage: .set() persists to storage', async () => {
+    const sig = await resolvePrototype({ $prototype: 'LocalStorage', key: 'lsPersist', default: 0 }, {}, '$ls');
     sig.set(123);
     expect(JSON.parse(localStorage.getItem('lsPersist'))).toBe(123);
   });
 
-  test('LocalStorage: .clear() removes from storage', () => {
+  test('LocalStorage: .clear() removes from storage', async () => {
     localStorage.setItem('lsClear', JSON.stringify(1));
-    const sig = resolvePrototype({ $prototype: 'LocalStorage', key: 'lsClear' }, {}, '$ls');
+    const sig = await resolvePrototype({ $prototype: 'LocalStorage', key: 'lsClear' }, {}, '$ls');
     sig.clear();
     expect(localStorage.getItem('lsClear')).toBeNull();
     expect(sig.get()).toBeNull();
   });
 
-  test('SessionStorage: reads and writes session storage', () => {
+  test('SessionStorage: reads and writes session storage', async () => {
     sessionStorage.setItem('ssKey', JSON.stringify('hello'));
-    const sig = resolvePrototype({ $prototype: 'SessionStorage', key: 'ssKey' }, {}, '$ss');
+    const sig = await resolvePrototype({ $prototype: 'SessionStorage', key: 'ssKey' }, {}, '$ss');
     expect(sig.get()).toBe('hello');
     sig.set('world');
     expect(JSON.parse(sessionStorage.getItem('ssKey'))).toBe('world');
@@ -411,8 +418,8 @@ describe('resolvePrototype', () => {
     expect(sessionStorage.getItem('ssKey')).toBeNull();
   });
 
-  test('Cookie: reads, writes, and clears cookie', () => {
-    const sig = resolvePrototype({
+  test('Cookie: reads, writes, and clears cookie', async () => {
+    const sig = await resolvePrototype({
       $prototype: 'Cookie', name: 'testCookie', default: null,
       maxAge: 3600, path: '/', secure: false,
     }, {}, '$ck');
@@ -423,13 +430,13 @@ describe('resolvePrototype', () => {
     expect(sig.get()).toBeNull();
   });
 
-  test('Cookie: uses def key name when name prop absent', () => {
-    const sig = resolvePrototype({ $prototype: 'Cookie', default: 'ck' }, {}, 'myCookie');
+  test('Cookie: uses def key name when name prop absent', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Cookie', default: 'ck' }, {}, 'myCookie');
     expect(sig.get()).toBe('ck');
   });
 
-  test('Cookie: with domain and sameSite', () => {
-    const sig = resolvePrototype({
+  test('Cookie: with domain and sameSite', async () => {
+    const sig = await resolvePrototype({
       $prototype: 'Cookie', name: 'c2', default: null,
       domain: 'localhost', sameSite: 'Strict',
     }, {}, '$c2');
@@ -437,104 +444,104 @@ describe('resolvePrototype', () => {
     expect(sig.get()).toBe('val');
   });
 
-  test('IndexedDB: returns Signal.State', () => {
+  test('IndexedDB: returns Signal.State', async () => {
     // happy-dom doesn't provide indexedDB — stub it for this test
     const fakeReq = { onupgradeneeded: null, onsuccess: null, onerror: null };
     global.indexedDB = { open: () => fakeReq };
-    const sig = resolvePrototype({
+    const sig = await resolvePrototype({
       $prototype: 'IndexedDB', database: 'testDB', store: 'items',
     }, {}, '$db');
     expect(isSignal(sig)).toBe(true);
     delete global.indexedDB;
   });
 
-  test('Set: default empty', () => {
-    const sig = resolvePrototype({ $prototype: 'Set' }, {}, '$s');
+  test('Set: default empty', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Set' }, {}, '$s');
     expect(sig.get()).toBeInstanceOf(Set);
     expect(sig.get().size).toBe(0);
   });
 
-  test('Set: default values', () => {
-    const sig = resolvePrototype({ $prototype: 'Set', default: [1, 2] }, {}, '$s');
+  test('Set: default values', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Set', default: [1, 2] }, {}, '$s');
     expect(sig.get().has(1)).toBe(true);
   });
 
-  test('Set: .add()', () => {
-    const sig = resolvePrototype({ $prototype: 'Set' }, {}, '$s');
+  test('Set: .add()', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Set' }, {}, '$s');
     sig.add('x');
     expect(sig.get().has('x')).toBe(true);
   });
 
-  test('Set: .delete()', () => {
-    const sig = resolvePrototype({ $prototype: 'Set', default: ['a', 'b'] }, {}, '$s');
+  test('Set: .delete()', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Set', default: ['a', 'b'] }, {}, '$s');
     sig.delete('a');
     expect(sig.get().has('a')).toBe(false);
   });
 
-  test('Set: .clear()', () => {
-    const sig = resolvePrototype({ $prototype: 'Set', default: [1] }, {}, '$s');
+  test('Set: .clear()', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Set', default: [1] }, {}, '$s');
     sig.clear();
     expect(sig.get().size).toBe(0);
   });
 
-  test('Map: default empty', () => {
-    const sig = resolvePrototype({ $prototype: 'Map' }, {}, '$m');
+  test('Map: default empty', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Map' }, {}, '$m');
     expect(sig.get()).toBeInstanceOf(Map);
   });
 
-  test('Map: default object', () => {
-    const sig = resolvePrototype({ $prototype: 'Map', default: { a: 1 } }, {}, '$m');
+  test('Map: default object', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Map', default: { a: 1 } }, {}, '$m');
     expect(sig.get().get('a')).toBe(1);
   });
 
-  test('Map: .put()', () => {
-    const sig = resolvePrototype({ $prototype: 'Map' }, {}, '$m');
+  test('Map: .put()', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Map' }, {}, '$m');
     sig.put('k', 'v');
     expect(sig.get().get('k')).toBe('v');
   });
 
-  test('Map: .remove()', () => {
-    const sig = resolvePrototype({ $prototype: 'Map', default: { x: 9 } }, {}, '$m');
+  test('Map: .remove()', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Map', default: { x: 9 } }, {}, '$m');
     sig.remove('x');
     expect(sig.get().has('x')).toBe(false);
   });
 
-  test('Map: .clear()', () => {
-    const sig = resolvePrototype({ $prototype: 'Map', default: { a: 1 } }, {}, '$m');
+  test('Map: .clear()', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Map', default: { a: 1 } }, {}, '$m');
     sig.clear();
     expect(sig.get().size).toBe(0);
   });
 
-  test('FormData: returns Signal.State with FormData', () => {
-    const sig = resolvePrototype({ $prototype: 'FormData', fields: { name: 'Alice' } }, {}, '$fd');
+  test('FormData: returns Signal.State with FormData', async () => {
+    const sig = await resolvePrototype({ $prototype: 'FormData', fields: { name: 'Alice' } }, {}, '$fd');
     expect(sig.get()).toBeInstanceOf(FormData);
     expect(sig.get().get('name')).toBe('Alice');
   });
 
-  test('FormData: no fields', () => {
-    const sig = resolvePrototype({ $prototype: 'FormData' }, {}, '$fd');
+  test('FormData: no fields', async () => {
+    const sig = await resolvePrototype({ $prototype: 'FormData' }, {}, '$fd');
     expect(sig.get()).toBeInstanceOf(FormData);
   });
 
-  test('Blob: returns Signal.State with Blob', () => {
-    const sig = resolvePrototype({ $prototype: 'Blob', parts: ['hello'], type: 'text/plain' }, {}, '$b');
+  test('Blob: returns Signal.State with Blob', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Blob', parts: ['hello'], type: 'text/plain' }, {}, '$b');
     expect(sig.get()).toBeInstanceOf(Blob);
   });
 
-  test('Blob: no parts or type', () => {
-    const sig = resolvePrototype({ $prototype: 'Blob' }, {}, '$b');
+  test('Blob: no parts or type', async () => {
+    const sig = await resolvePrototype({ $prototype: 'Blob' }, {}, '$b');
     expect(sig.get()).toBeInstanceOf(Blob);
   });
 
-  test('ReadableStream: returns Signal.State(null)', () => {
-    const sig = resolvePrototype({ $prototype: 'ReadableStream' }, {}, '$rs');
+  test('ReadableStream: returns Signal.State(null)', async () => {
+    const sig = await resolvePrototype({ $prototype: 'ReadableStream' }, {}, '$rs');
     expect(isSignal(sig)).toBe(true);
     expect(sig.get()).toBeNull();
   });
 
-  test('unknown $prototype: warns and returns Signal.State(null)', () => {
+  test('unknown $prototype: warns and returns Signal.State(null)', async () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
-    const sig = resolvePrototype({ $prototype: 'Unknown' }, {}, '$u');
+    const sig = await resolvePrototype({ $prototype: 'Unknown' }, {}, '$u');
     expect(isSignal(sig)).toBe(true);
     expect(sig.get()).toBeNull();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Unknown'));
@@ -821,9 +828,8 @@ describe('JSONsx', () => {
 
   test('calls onMount if present in scope', async () => {
     const target = document.createElement('div');
-    // onMount is called after mount; inject it via $handlers data URL
-    const dataUrl = 'data:text/javascript,export default { onMount() { globalThis._testMounted = true; } }';
-    await JSONsx({ tagName: 'div', $handlers: dataUrl }, target);
+    const handlersUrl = new URL('./_test_handlers.js', import.meta.url).href;
+    await JSONsx({ tagName: 'div', $handlers: handlersUrl }, target);
     await wait();
     expect(globalThis._testMounted).toBe(true);
     delete globalThis._testMounted;

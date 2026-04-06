@@ -1,4 +1,7 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { GlobalRegistrator } from '@happy-dom/global-registrator';
+GlobalRegistrator.register();
+
+import { describe, test, expect } from 'bun:test';
 import { Signal } from 'signal-polyfill';
 import { effect } from '../runtime/effect.js';
 

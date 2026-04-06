@@ -41,7 +41,7 @@ export async function compile(sourcePath, opts = {}) {
   const doc = await $RefParser.dereference(sourcePath);
 
   const styleBlock    = compileStyles(doc);
-  const bodyContent   = compileNode(doc, isDynamic(doc));
+  const bodyContent   = compileNode(doc, isNodeDynamic(doc));
   const handlerScript = doc.$handlers
     ? `<script type="module" src="${doc.$handlers}"></script>`
     : '';
@@ -103,6 +103,34 @@ export function isDynamic(def) {
   if (Array.isArray(def.children)) {
     if (def.children.some(isDynamic))        return true;
   }
+
+  for (const [key, val] of Object.entries(def)) {
+    if (RESERVED_KEYS.has(key)) continue;
+    if (val !== null && typeof val === 'object' && typeof val.$ref === 'string') return true;
+  }
+
+  return false;
+}
+
+/**
+ * Shallow variant of isDynamic — checks only this node's own properties,
+ * not its children. Used at compile() root so a static parent with dynamic
+ * children emits plain HTML at the root while children become islands.
+ *
+ * @param {object} def
+ * @returns {boolean}
+ */
+function isNodeDynamic(def) {
+  if (!def || typeof def !== 'object') return false;
+
+  if (def.$defs) {
+    for (const d of Object.values(def.$defs)) {
+      if (d.signal || d.$compute || d.$handler || d.$prototype) return true;
+    }
+  }
+
+  if (def.$switch)                           return true;
+  if (def.children?.$prototype === 'Array') return true;
 
   for (const [key, val] of Object.entries(def)) {
     if (RESERVED_KEYS.has(key)) continue;

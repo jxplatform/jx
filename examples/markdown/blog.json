@@ -1,0 +1,134 @@
+{
+  "$schema": "https://jsonsx.dev/schema/v1",
+  "$id": "MarkdownBlog",
+  "$handlers": "./blog.js",
+
+  "$defs": {
+    "$posts": {
+      "$prototype": "MarkdownCollection",
+      "$src": "../../parser/md/md.js",
+      "src": "./content/posts/*.md",
+      "basePath": ".",
+      "sortBy": "frontmatter.date",
+      "sortOrder": "desc",
+      "signal": true
+    },
+    "$currentSlug": {
+      "type": "string",
+      "default": "",
+      "signal": true
+    },
+    "$currentPost": {
+      "$prototype": "MarkdownFile",
+      "$src": "../../parser/md/md.js",
+      "src": "./content/posts/getting-started.md",
+      "basePath": ".",
+      "directives": true,
+      "signal": true
+    },
+    "selectPost": { "$handler": true }
+  },
+
+  "tagName": "markdown-blog",
+  "style": {
+    "fontFamily": "system-ui, -apple-system, sans-serif",
+    "maxWidth": "960px",
+    "margin": "2rem auto",
+    "padding": "0 1rem",
+    "display": "grid",
+    "gridTemplateColumns": "300px 1fr",
+    "gap": "2rem"
+  },
+
+  "children": [
+    {
+      "tagName": "aside",
+      "style": { "borderRight": "1px solid #e0e0e0", "paddingRight": "1.5rem" },
+      "children": [
+        {
+          "tagName": "h2",
+          "textContent": "Posts",
+          "style": { "marginTop": "0", "fontSize": "1.25rem" }
+        },
+        {
+          "tagName": "ul",
+          "style": { "listStyle": "none", "padding": "0", "margin": "0" },
+          "children": {
+            "$prototype": "Array",
+            "items": { "$ref": "#/$defs/$posts" },
+            "map": {
+              "tagName": "li",
+              "style": { "marginBottom": "1rem" },
+              "children": [
+                {
+                  "tagName": "a",
+                  "style": {
+                    "textDecoration": "none",
+                    "color": "#0066cc",
+                    "fontWeight": "600",
+                    "cursor": "pointer",
+                    ":hover": { "textDecoration": "underline" }
+                  },
+                  "textContent": { "$ref": "$map/item/frontmatter/title" },
+                  "onclick": { "$ref": "#/$defs/selectPost" }
+                },
+                {
+                  "tagName": "time",
+                  "style": { "display": "block", "fontSize": "0.8rem", "color": "#888" },
+                  "textContent": { "$ref": "$map/item/frontmatter/date" }
+                },
+                {
+                  "tagName": "span",
+                  "style": { "fontSize": "0.75rem", "color": "#666" },
+                  "textContent": { "$ref": "$map/item/$readingTime" }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tagName": "main",
+      "children": [
+        {
+          "tagName": "header",
+          "children": [
+            {
+              "tagName": "h1",
+              "style": { "marginTop": "0" },
+              "textContent": { "$ref": "#/$defs/$currentPost/frontmatter/title" }
+            },
+            {
+              "tagName": "div",
+              "style": { "color": "#666", "fontSize": "0.875rem", "marginBottom": "1.5rem" },
+              "children": [
+                {
+                  "tagName": "time",
+                  "textContent": { "$ref": "#/$defs/$currentPost/frontmatter/date" }
+                },
+                {
+                  "tagName": "span",
+                  "textContent": " · "
+                },
+                {
+                  "tagName": "span",
+                  "textContent": { "$ref": "#/$defs/$currentPost/$readingTime" }
+                },
+                {
+                  "tagName": "span",
+                  "textContent": " min read"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tagName": "article",
+          "className": "prose",
+          "innerHTML": { "$ref": "#/$defs/$currentPost/$body" }
+        }
+      ]
+    }
+  ]
+}
