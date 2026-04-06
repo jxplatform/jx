@@ -696,10 +696,15 @@ async function resolveExternalPrototype(def, $defs, key, base) {
       mod = await import(src);
     } catch {
       if (base) {
-        const resolvedSrc = new URL(src, base).href;
-        mod = await import(resolvedSrc);
+        try {
+          const resolvedSrc = new URL(src, base).href;
+          mod = await import(resolvedSrc);
+        } catch {
+          // Module cannot run in the browser — fall back to dev server proxy
+          return resolveViaDevProxy(def, $defs, key, base);
+        }
       } else {
-        throw new Error(`JSONsx: failed to import '$src' "${src}" for "${key}"`);
+        return resolveViaDevProxy(def, $defs, key, base);
       }
     }
     _moduleCache.set(src, mod);
@@ -739,6 +744,58 @@ async function resolveExternalPrototype(def, $defs, key, base) {
   }
 
   return value;
+}
+
+/**
+ * Dev-mode fallback: when an $src module cannot run in the browser, proxy the
+ * resolve() call through the JSONsx dev server (POST /__jsonsx_resolve__).
+ * Supports reactive template strings in config values via Vue effect().
+ */
+async function resolveViaDevProxy(def, $defs, key, base) {
+  const config = {};
+  for (const [k, v] of Object.entries(def)) {
+    if (!EXTERNAL_RESERVED.has(k)) config[k] = v;
+  }
+
+  const hasTemplates = Object.values(config).some(v => isTemplateString(v));
+
+  const doResolve = (resolvedConfig) =>
+    fetch('/__jsonsx_resolve__', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        $src:       def.$src,
+        $prototype: def.$prototype,
+        $export:    def.$export,
+        $base:      base,
+        ...resolvedConfig,
+      }),
+    }).then(r => {
+      if (!r.ok) throw new Error(`JSONsx dev proxy ${r.status} for "${key}"`);
+      return r.json();
+    });
+
+  if (def.signal) {
+    const state = ref(null);
+    if (hasTemplates) {
+      effect(() => {
+        const resolvedConfig = {};
+        for (const [k, v] of Object.entries(config)) {
+          resolvedConfig[k] = isTemplateString(v) ? evaluateTemplate(v, $defs) : v;
+        }
+        doResolve(resolvedConfig)
+          .then(value => { state.value = value; })
+          .catch(e => console.error('JSONsx dev proxy:', e));
+      });
+    } else {
+      doResolve(config)
+        .then(value => { state.value = value; })
+        .catch(e => console.error('JSONsx dev proxy:', e));
+    }
+    return state;
+  }
+
+  return doResolve(config);
 }
 
 // ─── Server function resolution (dev mode) ────────────────────────────────────

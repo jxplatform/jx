@@ -10,7 +10,10 @@
  */
 
 import { watch } from 'fs';
-import { MarkdownFile, MarkdownCollection } from '../packages/parser/md.js';
+import { resolve, relative } from 'node:path';
+
+// Absolute path to the project root (one level above examples/)
+const PROJECT_ROOT = resolve(import.meta.dir, '..');
 
 // ─── Build ────────────────────────────────────────────────────────────────────
 
@@ -117,34 +120,69 @@ const server = Bun.serve({
       });
     }
 
-    // ─── Markdown API ──────────────────────────────────────────────────────────
+    // ─── Generic server-side prototype proxy ───────────────────────────────────
+    // Handles $prototype + $src entries whose modules can't run in the browser.
+    // The runtime falls back here when import() fails (e.g. Node-only modules).
 
-    if (path === '/api/markdown/posts') {
-      const coll = new MarkdownCollection({
-        src:       './examples/markdown/content/posts/*.md',
-        sortBy:    'frontmatter.date',
-        sortOrder: 'desc',
-      });
-      const posts = await coll.resolve();
-      return new Response(JSON.stringify(posts), {
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+    if (path === '/__jsonsx_resolve__' && req.method === 'POST') {
+      let body;
+      try { body = await req.json(); } catch { return new Response('Invalid JSON body', { status: 400 }); }
 
-    if (path === '/api/markdown/post') {
-      const raw  = url.searchParams.get('slug') || 'getting-started';
-      const slug = raw.replace(/[^a-z0-9_-]/gi, '-').replace(/^-+|-+$/g, '') || 'getting-started';
-      const file = new MarkdownFile({
-        src: `./examples/markdown/content/posts/${slug}.md`,
-      });
+      const { $src, $prototype, $export: xport, $base, ...config } = body;
+      if (!$src) return new Response('Missing $src', { status: 400 });
+
+      // Resolve $src to an absolute path using the document's URL as the base
+      let moduleAbsPath;
       try {
-        const post = await file.resolve();
-        return new Response(JSON.stringify(post), {
+        if ($base) {
+          const docUrlPath = new URL($base).pathname;                       // /examples/markdown/blog.json
+          const docDir     = docUrlPath.slice(0, docUrlPath.lastIndexOf('/') + 1); // /examples/markdown/
+          const docAbsDir  = resolve(PROJECT_ROOT, '.' + docDir);
+          moduleAbsPath    = resolve(docAbsDir, $src);
+        } else {
+          moduleAbsPath = resolve(PROJECT_ROOT, $src);
+        }
+      } catch (e) {
+        return new Response(`Cannot resolve $src "${$src}": ${e.message}`, { status: 400 });
+      }
+
+      // Rebase any relative string config values from doc-relative to CWD-relative
+      // so the class receives paths it can resolve from the server's working directory.
+      if ($base) {
+        const docUrlPath = new URL($base).pathname;
+        const docDir     = docUrlPath.slice(0, docUrlPath.lastIndexOf('/') + 1);
+        const docAbsDir  = resolve(PROJECT_ROOT, '.' + docDir);
+        for (const [k, v] of Object.entries(config)) {
+          if (typeof v === 'string' && (v.startsWith('./') || v.startsWith('../'))) {
+            config[k] = './' + relative(process.cwd(), resolve(docAbsDir, v));
+          }
+        }
+      }
+
+      let mod;
+      try {
+        mod = await import(moduleAbsPath);
+      } catch (e) {
+        return new Response(`Failed to import "${$src}": ${e.message}`, { status: 500 });
+      }
+
+      const exportName  = xport ?? $prototype;
+      const ExportedClass = mod[exportName] ?? mod.default?.[exportName];
+      if (typeof ExportedClass !== 'function') {
+        return new Response(`Export "${exportName}" not found in "${$src}"`, { status: 500 });
+      }
+
+      try {
+        const instance = new ExportedClass(config);
+        const value = typeof instance.resolve === 'function'
+          ? await instance.resolve()
+          : ('value' in instance ? instance.value : instance);
+        return new Response(JSON.stringify(value), {
           headers: { 'Content-Type': 'application/json' },
         });
-      } catch {
-        return new Response(JSON.stringify({ error: 'Post not found' }), {
-          status: 404,
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), {
+          status: 500,
           headers: { 'Content-Type': 'application/json' },
         });
       }

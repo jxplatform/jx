@@ -4,14 +4,18 @@
 
   "$defs": {
     "posts": {
-      "$prototype": "Request",
-      "url": "/api/markdown/posts",
+      "$prototype": "MarkdownCollection",
+      "$src": "../../packages/parser/md.js",
+      "src": "./content/posts/*.md",
+      "sortBy": "frontmatter.date",
+      "sortOrder": "desc",
       "signal": true
     },
     "currentSlug": { "type": "string", "default": "getting-started" },
     "currentPost": {
-      "$prototype": "Request",
-      "url": "/api/markdown/post?slug=${$defs.currentSlug}",
+      "$prototype": "MarkdownFile",
+      "$src": "../../packages/parser/md.js",
+      "src": "./content/posts/${$defs.currentSlug}.md",
       "signal": true
     },
     "selectPost": {
