@@ -11,14 +11,17 @@
     "fullName": {
       "$prototype": "Function",
       "body": "return $defs.firstName + ' ' + $defs.lastName;",
-      "signal": true,
-      "description": "Concatenated full name"
+      "signal": true
     },
     "displayTitle": {
       "$prototype": "Function",
-      "body": "const s = $defs.score; return s >= 90 ? 'Expert' : s >= 70 ? 'Advanced' : s >= 50 ? 'Intermediate' : 'Beginner';",
-      "signal": true,
-      "description": "Skill level label derived from score"
+      "body": "const s = $defs.score, l = $defs.level; return s >= 90 ? `Expert (Level ${l})` : s >= 70 ? `Advanced (Level ${l})` : s >= 50 ? `Intermediate (Level ${l})` : `Beginner (Level ${l})`;",
+      "signal": true
+    },
+    "levelClass": {
+      "$prototype": "Function",
+      "body": "const s = $defs.score; return s >= 90 ? 'expert' : s >= 70 ? 'advanced' : s >= 50 ? 'intermediate' : 'beginner';",
+      "signal": true
     },
     "scoreLabel": "${$defs.score + '%'}",
 
@@ -37,155 +40,199 @@
     }
   },
 
-  "tagName": "user-card",
+  "tagName": "div",
   "style": {
-    "display": "block",
-    "maxWidth": "400px",
-    "margin": "1em auto",
-    "padding": "1.5em",
-    "border": "1px solid #ddd",
-    "borderRadius": "8px",
-    "backgroundColor": "white",
-    "boxShadow": "0 2px 4px rgba(0,0,0,0.1)",
-    "fontFamily": "system-ui, sans-serif"
+    "fontFamily": "system-ui, sans-serif",
+    "background": "#f8f9fa",
+    "minHeight": "100vh",
+    "padding": "2em",
+    "margin": "0",
+    "boxSizing": "border-box"
   },
 
   "children": [
     {
-      "tagName": "div",
+      "tagName": "h1",
+      "textContent": "Computed Signals",
+      "style": { "textAlign": "center", "color": "#333" }
+    },
+    {
+      "tagName": "p",
+      "textContent": "$fullName, $displayTitle, and $scoreLabel are computed signals declared in user-card.json. They update automatically when their deps change — zero handler code required.",
       "style": {
-        "display": "flex",
-        "alignItems": "center",
-        "gap": "1em",
-        "marginBottom": "1.25em"
+        "textAlign": "center",
+        "color": "#666",
+        "maxWidth": "540px",
+        "margin": "0 auto 2em"
+      }
+    },
+    {
+      "tagName": "user-card",
+      "attributes": { "data-level": "${$defs.levelClass}" },
+      "style": {
+        "display": "block",
+        "maxWidth": "400px",
+        "margin": "1em auto",
+        "padding": "1.5em",
+        "border": "1px solid #ddd",
+        "borderRadius": "8px",
+        "backgroundColor": "white",
+        "boxShadow": "0 2px 4px rgba(0,0,0,0.1)",
+
+        "[data-level=\"beginner\"] .badge":        { "backgroundColor": "#6c757d" },
+        "[data-level=\"intermediate\"] .badge":    { "backgroundColor": "#ffc107" },
+        "[data-level=\"advanced\"] .badge":        { "backgroundColor": "#007bff" },
+        "[data-level=\"expert\"] .badge":          { "backgroundColor": "#28a745" },
+
+        "[data-level=\"beginner\"] .level-text":   { "color": "#6c757d" },
+        "[data-level=\"intermediate\"] .level-text": { "color": "#ffc107" },
+        "[data-level=\"advanced\"] .level-text":   { "color": "#007bff" },
+        "[data-level=\"expert\"] .level-text":     { "color": "#28a745" },
+
+        "[data-level=\"beginner\"] .progress-bar":     { "backgroundColor": "#6c757d" },
+        "[data-level=\"intermediate\"] .progress-bar": { "backgroundColor": "#ffc107" },
+        "[data-level=\"advanced\"] .progress-bar":     { "backgroundColor": "#007bff" },
+        "[data-level=\"expert\"] .progress-bar":       { "backgroundColor": "#28a745" }
       },
+
       "children": [
         {
           "tagName": "div",
           "style": {
-            "width": "56px",
-            "height": "56px",
-            "borderRadius": "50%",
-            "backgroundColor": "#007bff",
-            "color": "white",
             "display": "flex",
             "alignItems": "center",
-            "justifyContent": "center",
-            "fontWeight": "bold",
-            "fontSize": "1.25rem",
-            "flexShrink": "0"
-          },
-          "textContent": "${$defs.level}"
-        },
-        {
-          "tagName": "div",
-          "children": [
-            {
-              "tagName": "h3",
-              "textContent": { "$ref": "#/$defs/fullName" },
-              "style": { "margin": "0 0 0.25em", "fontSize": "1.15em", "color": "#222" }
-            },
-            {
-              "tagName": "span",
-              "textContent": { "$ref": "#/$defs/displayTitle" },
-              "style": { "fontSize": "0.875em", "color": "#007bff", "fontWeight": "500" }
-            }
-          ]
-        }
-      ]
-    },
-
-    {
-      "tagName": "div",
-      "style": { "marginBottom": "1.25em" },
-      "children": [
-        {
-          "tagName": "div",
-          "style": {
-            "display": "flex",
-            "justifyContent": "space-between",
-            "marginBottom": "0.5em",
-            "fontSize": "0.875em",
-            "color": "#666"
-          },
-          "children": [
-            { "tagName": "span", "textContent": "Score" },
-            { "tagName": "span", "textContent": { "$ref": "#/$defs/scoreLabel" } }
-          ]
-        },
-        {
-          "tagName": "div",
-          "style": {
-            "height": "8px",
-            "backgroundColor": "#e9ecef",
-            "borderRadius": "4px",
-            "overflow": "hidden"
+            "gap": "1em",
+            "marginBottom": "1.25em"
           },
           "children": [
             {
               "tagName": "div",
+              "className": "badge",
               "style": {
-                "height": "100%",
-                "backgroundColor": "#007bff",
-                "transition": "width 0.3s ease"
+                "width": "56px",
+                "height": "56px",
+                "borderRadius": "50%",
+                "color": "white",
+                "display": "flex",
+                "alignItems": "center",
+                "justifyContent": "center",
+                "fontWeight": "bold",
+                "fontSize": "1.25rem",
+                "flexShrink": "0"
               },
-              "attributes": {
-                "style": ""
+              "textContent": "${$defs.level}"
+            },
+            {
+              "tagName": "div",
+              "style": { "flex": "1" },
+              "children": [
+                {
+                  "tagName": "h3",
+                  "textContent": { "$ref": "#/$defs/fullName" },
+                  "style": { "margin": "0 0 0.25em", "fontSize": "1.15em", "color": "#222" }
+                },
+                {
+                  "tagName": "span",
+                  "className": "level-text",
+                  "textContent": { "$ref": "#/$defs/displayTitle" },
+                  "style": { "fontSize": "0.875em", "fontWeight": "500" }
+                }
+              ]
+            }
+          ]
+        },
+
+        {
+          "tagName": "div",
+          "style": { "marginBottom": "1.25em" },
+          "children": [
+            {
+              "tagName": "div",
+              "style": {
+                "display": "flex",
+                "justifyContent": "space-between",
+                "marginBottom": "0.5em",
+                "fontSize": "0.875em",
+                "color": "#666"
+              },
+              "children": [
+                { "tagName": "span", "textContent": "Progress" },
+                { "tagName": "span", "textContent": { "$ref": "#/$defs/scoreLabel" } }
+              ]
+            },
+            {
+              "tagName": "div",
+              "style": {
+                "height": "8px",
+                "backgroundColor": "#e9ecef",
+                "borderRadius": "4px",
+                "overflow": "hidden"
+              },
+              "children": [
+                {
+                  "tagName": "div",
+                  "className": "progress-bar",
+                  "style": {
+                    "height": "100%",
+                    "width": "${$defs.score + '%'}",
+                    "transition": "width 0.3s ease, background-color 0.3s ease"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+
+        {
+          "tagName": "div",
+          "style": { "display": "flex", "gap": "0.5em", "flexWrap": "wrap" },
+          "children": [
+            {
+              "tagName": "button",
+              "textContent": "+10 Score",
+              "onclick": { "$ref": "#/$defs/addScore" },
+              "style": {
+                "padding": "0.4em 0.9em",
+                "backgroundColor": "#28a745",
+                "color": "white",
+                "border": "none",
+                "borderRadius": "4px",
+                "cursor": "pointer",
+                "fontSize": "0.875em",
+                ":hover": { "backgroundColor": "#218838" }
+              }
+            },
+            {
+              "tagName": "button",
+              "textContent": "\u221210 Score",
+              "onclick": { "$ref": "#/$defs/subtractScore" },
+              "style": {
+                "padding": "0.4em 0.9em",
+                "backgroundColor": "#dc3545",
+                "color": "white",
+                "border": "none",
+                "borderRadius": "4px",
+                "cursor": "pointer",
+                "fontSize": "0.875em",
+                ":hover": { "backgroundColor": "#c82333" }
+              }
+            },
+            {
+              "tagName": "button",
+              "textContent": "Change Name",
+              "onclick": { "$ref": "#/$defs/changeName" },
+              "style": {
+                "padding": "0.4em 0.9em",
+                "border": "1px solid #007bff",
+                "borderRadius": "4px",
+                "backgroundColor": "white",
+                "color": "#007bff",
+                "cursor": "pointer",
+                "fontSize": "0.875em",
+                ":hover": { "backgroundColor": "#f0f7ff" }
               }
             }
           ]
-        }
-      ]
-    },
-
-    {
-      "tagName": "div",
-      "style": { "display": "flex", "gap": "0.5em", "flexWrap": "wrap" },
-      "children": [
-        {
-          "tagName": "button",
-          "textContent": "+10 Score",
-          "onclick": { "$ref": "#/$defs/addScore" },
-          "style": {
-            "padding": "0.4em 0.9em",
-            "backgroundColor": "#28a745",
-            "color": "white",
-            "border": "none",
-            "borderRadius": "4px",
-            "cursor": "pointer",
-            "fontSize": "0.875em",
-            ":hover": { "backgroundColor": "#218838" }
-          }
-        },
-        {
-          "tagName": "button",
-          "textContent": "\u221210 Score",
-          "onclick": { "$ref": "#/$defs/subtractScore" },
-          "style": {
-            "padding": "0.4em 0.9em",
-            "backgroundColor": "#dc3545",
-            "color": "white",
-            "border": "none",
-            "borderRadius": "4px",
-            "cursor": "pointer",
-            "fontSize": "0.875em",
-            ":hover": { "backgroundColor": "#c82333" }
-          }
-        },
-        {
-          "tagName": "button",
-          "textContent": "Change Name",
-          "onclick": { "$ref": "#/$defs/changeName" },
-          "style": {
-            "padding": "0.4em 0.9em",
-            "border": "1px solid #007bff",
-            "borderRadius": "4px",
-            "backgroundColor": "white",
-            "color": "#007bff",
-            "cursor": "pointer",
-            "fontSize": "0.875em",
-            ":hover": { "backgroundColor": "#f0f7ff" }
-          }
         }
       ]
     }
