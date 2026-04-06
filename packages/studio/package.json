@@ -14,7 +14,15 @@
   },
   "dependencies": {
     "@atlaskit/pragmatic-drag-and-drop": "^1.7.10",
-    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0"
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0",
+    "@jsonsx/runtime": "workspace:*",
+    "remark-directive": "^3.0.0",
+    "remark-frontmatter": "^5.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-parse": "^11.0.0",
+    "remark-stringify": "^11.0.0",
+    "unified": "^11.0.0",
+    "yaml": "^2.7.0"
   },
   "devDependencies": {
     "@webref/css": "^8.5.2",

@@ -27,13 +27,13 @@ import { reactive, ref, computed, effect, isRef, onEffectCleanup } from '@vue/re
  * import { JSONsx } from '@jsonsx/runtime';
  * const $defs = await JSONsx('./counter.json', document.getElementById('app'));
  */
-export async function JSONsx(source, target = document.body) {
+export async function JSONsx(source, target = document.body, options) {
   const base  = typeof source === 'string'
     ? new URL(source, location.href).href
     : location.href;
   const doc   = await resolve(source);
   const $defs = await buildScope(doc, {}, base);
-  target.appendChild(renderNode(doc, $defs));
+  target.appendChild(renderNode(doc, $defs, options));
   if (typeof $defs.onMount === 'function') $defs.onMount($defs);
   return $defs;
 }
@@ -138,7 +138,7 @@ export async function buildScope(doc, parentScope = {}, base = location.href) {
 
   // Fifth pass: timing: "server" entries (dev mode — execute client-side, boundary unenforced)
   for (const [key, def] of Object.entries(defs)) {
-    if (typeof def === 'object' && def.timing === 'server' && def.$src && def.$export && !def.$prototype) {
+    if (def != null && typeof def === 'object' && def.timing === 'server' && def.$src && def.$export && !def.$prototype) {
       $defs[key] = await resolveServerFunction(def, $defs, key, base);
     }
   }
@@ -261,7 +261,9 @@ export const RESERVED_KEYS = new Set([
  * @param {object} $defs - reactive scope proxy (or child scope via Object.create)
  * @returns {HTMLElement}
  */
-export function renderNode(def, $defs) {
+export function renderNode(def, $defs, options) {
+  const path = options?._path ?? [];
+
   // Extend scope with any $-prefixed local bindings declared on this node
   let localDefs = $defs;
   for (const [key, val] of Object.entries(def)) {
@@ -273,19 +275,23 @@ export function renderNode(def, $defs) {
 
   if (def.$props) {
     const { $props, ...rest } = def;
-    return renderNode(rest, mergeProps(def, localDefs));
+    return renderNode(rest, mergeProps(def, localDefs), options);
   }
-  if (def.$switch)                          return renderSwitch(def, localDefs);
-  if (def.children?.$prototype === 'Array') return renderMappedArray(def, localDefs);
+  if (def.$switch)                          return renderSwitch(def, localDefs, options);
+  if (def.children?.$prototype === 'Array') return renderMappedArray(def, localDefs, options);
 
   const el = document.createElement(def.tagName ?? 'div');
+
+  if (options?.onNodeCreated) options.onNodeCreated(el, path, def);
 
   applyProperties(el, def, localDefs);
   applyStyle(el, def.style ?? {}, localDefs['$media'] ?? {}, localDefs);
   applyAttributes(el, def.attributes ?? {}, localDefs);
 
-  for (const child of (Array.isArray(def.children) ? def.children : [])) {
-    el.appendChild(renderNode(child, localDefs));
+  const children = Array.isArray(def.children) ? def.children : [];
+  for (let i = 0; i < children.length; i++) {
+    const childOpts = options ? { ...options, _path: [...path, 'children', i] } : undefined;
+    el.appendChild(renderNode(children[i], localDefs, childOpts));
   }
 
   return el;
@@ -403,8 +409,12 @@ function applyAttributes(el, attrs, $defs) {
 
 // ─── Array mapping ────────────────────────────────────────────────────────────
 
-function renderMappedArray(def, $defs) {
+function renderMappedArray(def, $defs, options) {
+  const path = options?._path ?? [];
   const container = document.createElement(def.tagName ?? 'div');
+
+  if (options?.onNodeCreated) options.onNodeCreated(container, path, def);
+
   applyProperties(container, def, $defs);
   applyStyle(container, def.style ?? {}, $defs['$media'] ?? {}, $defs);
   applyAttributes(container, def.attributes ?? {}, $defs);
@@ -433,7 +443,8 @@ function renderMappedArray(def, $defs) {
       child.$map = { item, index };
       child['$map/item'] = item;
       child['$map/index'] = index;
-      container.appendChild(renderNode(mapDef, child));
+      const childOpts = options ? { ...options, _path: [...path, 'children', 'map', index] } : undefined;
+      container.appendChild(renderNode(mapDef, child, childOpts));
     });
   });
 
@@ -442,8 +453,12 @@ function renderMappedArray(def, $defs) {
 
 // ─── $switch ──────────────────────────────────────────────────────────────────
 
-function renderSwitch(def, $defs) {
+function renderSwitch(def, $defs, options) {
+  const path = options?._path ?? [];
   const container = document.createElement(def.tagName ?? 'div');
+
+  if (options?.onNodeCreated) options.onNodeCreated(container, path, def);
+
   applyProperties(container, def, $defs);
   applyStyle(container, def.style ?? {}, $defs['$media'] ?? {}, $defs);
   applyAttributes(container, def.attributes ?? {}, $defs);
@@ -464,12 +479,14 @@ function renderSwitch(def, $defs) {
         const childScope = await buildScope(doc, {}, href);
         if (gen !== generation) return;
         container.innerHTML = '';
-        container.appendChild(renderNode(doc, childScope));
+        const childOpts = options ? { ...options, _path: [...path, 'cases', key] } : undefined;
+        container.appendChild(renderNode(doc, childScope, childOpts));
       }).catch(e => console.error('JSONsx $switch: failed to load external case', caseDef.$ref, e));
       return;
     }
 
-    container.appendChild(renderNode(caseDef, $defs));
+    const childOpts = options ? { ...options, _path: [...path, 'cases', key] } : undefined;
+    container.appendChild(renderNode(caseDef, $defs, childOpts));
   });
 
   return container;
@@ -650,7 +667,7 @@ export async function resolvePrototype(def, $defs, key, base) {
 
     default:
       console.warn(`JSONsx: unknown $prototype "${def.$prototype}" for "${key}". Did you mean to add '$src'?`);
-      return null;
+      return ref(null);
   }
 }
 
@@ -800,7 +817,12 @@ export function resolveRef(ref, $defs) {
     const base = $defs.$map?.[key] ?? $defs['$map/' + key];
     return parts.length > 2 ? getPath(base, parts.slice(2).join('/')) : base;
   }
-  if (ref.startsWith('#/$defs/'))    return $defs[ref.slice('#/$defs/'.length)];
+  if (ref.startsWith('#/$defs/')) {
+    const sub   = ref.slice('#/$defs/'.length);
+    const slash = sub.indexOf('/');
+    if (slash < 0) return $defs[sub];
+    return getPath($defs[sub.slice(0, slash)], sub.slice(slash + 1));
+  }
   if (ref.startsWith('parent#/'))    return $defs[ref.slice('parent#/'.length)];
   if (ref.startsWith('window#/'))    return getPath(globalThis.window,   ref.slice('window#/'.length));
   if (ref.startsWith('document#/')) return getPath(globalThis.document, ref.slice('document#/'.length));

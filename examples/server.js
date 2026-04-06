@@ -10,6 +10,7 @@
  */
 
 import { watch } from 'fs';
+import { MarkdownFile, MarkdownCollection } from '../packages/parser/md.js';
 
 // ─── Build ────────────────────────────────────────────────────────────────────
 
@@ -115,6 +116,41 @@ const server = Bun.serve({
         },
       });
     }
+
+    // ─── Markdown API ──────────────────────────────────────────────────────────
+
+    if (path === '/api/markdown/posts') {
+      const coll = new MarkdownCollection({
+        src:       './examples/markdown/content/posts/*.md',
+        sortBy:    'frontmatter.date',
+        sortOrder: 'desc',
+      });
+      const posts = await coll.resolve();
+      return new Response(JSON.stringify(posts), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (path === '/api/markdown/post') {
+      const raw  = url.searchParams.get('slug') || 'getting-started';
+      const slug = raw.replace(/[^a-z0-9_-]/gi, '-').replace(/^-+|-+$/g, '') || 'getting-started';
+      const file = new MarkdownFile({
+        src: `./examples/markdown/content/posts/${slug}.md`,
+      });
+      try {
+        const post = await file.resolve();
+        return new Response(JSON.stringify(post), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch {
+        return new Response(JSON.stringify({ error: 'Post not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // ─── Static files ─────────────────────────────────────────────────────────
 
     const file = Bun.file('.' + path);
     if (!await file.exists()) return new Response('Not found', { status: 404 });

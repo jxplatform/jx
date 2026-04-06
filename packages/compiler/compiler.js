@@ -24,6 +24,7 @@
  */
 
 import $RefParser from '@apidevtools/json-schema-ref-parser';
+import { readFileSync } from 'node:fs';
 import { camelToKebab, toCSSText, RESERVED_KEYS } from '@jsonsx/runtime';
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
@@ -43,10 +44,17 @@ import { camelToKebab, toCSSText, RESERVED_KEYS } from '@jsonsx/runtime';
  */
 export async function compile(sourcePath, opts = {}) {
   const { title = 'JSONsx App', runtimeSrc = './dist/runtime.js' } = opts;
+
+  // Dereferenced doc for static analysis (isDynamic, compileStyles, etc.)
   const doc = await $RefParser.dereference(sourcePath);
 
+  // Raw JSON preserves internal $ref pointers needed by the runtime at hydration
+  const raw = typeof sourcePath === 'string'
+    ? JSON.parse(readFileSync(sourcePath, 'utf8'))
+    : sourcePath;
+
   const styleBlock    = compileStyles(doc);
-  const bodyContent   = compileNode(doc, isNodeDynamic(doc));
+  const bodyContent   = compileNode(doc, isNodeDynamic(doc), raw);
 
   // Collect unique $src imports from $prototype: "Function" entries
   const srcImports = collectSrcImports(doc);
@@ -284,21 +292,23 @@ function hasAnyIsland(def) {
  * Compile a single JSONsx node to an HTML string.
  * Dynamic nodes become hydration islands; static nodes become plain HTML.
  *
- * @param {object}  def     - Element definition
+ * @param {object}  def     - Element definition (dereferenced, for static analysis)
  * @param {boolean} dynamic - Whether this node is dynamic
+ * @param {object}  [raw]   - Raw definition with $ref pointers preserved (for island embedding)
  * @returns {string} HTML string
  */
-function compileNode(def, dynamic) {
+function compileNode(def, dynamic, raw) {
   if (dynamic) {
     const tag = def.tagName ?? 'div';
+    // Embed the raw JSON (with $ref intact) so the runtime can resolve bindings
     return `<${tag} data-jsonsx-island>
-  <script type="application/jsonsx+json">${JSON.stringify(def, null, 2)}</script>
+  <script type="application/jsonsx+json">${JSON.stringify(raw ?? def, null, 2)}</script>
 </${tag}>`;
   }
 
   const tag   = def.tagName ?? 'div';
   const attrs = buildAttrs(def);
-  const inner = buildInner(def);
+  const inner = buildInner(def, raw);
 
   return `<${tag}${attrs}>${inner}</${tag}>`;
 }
@@ -345,15 +355,17 @@ function buildAttrs(def) {
 /**
  * Build the inner HTML (textContent or children) for a static node.
  *
- * @param {object} def
+ * @param {object} def - Dereferenced definition
+ * @param {object} [raw] - Raw definition with $ref pointers preserved
  * @returns {string}
  */
-function buildInner(def) {
+function buildInner(def, raw) {
   if (typeof def.textContent === 'string') return escapeHtml(def.textContent);
   if (def.innerHTML) return def.innerHTML; // trusted static HTML
   if (Array.isArray(def.children)) {
+    const rawChildren = raw?.children;
     return def.children
-      .map(c => compileNode(c, isDynamic(c)))
+      .map((c, i) => compileNode(c, isDynamic(c), rawChildren?.[i]))
       .join('\n  ');
   }
   return '';
@@ -371,7 +383,10 @@ function buildInner(def) {
  */
 function compileStyles(doc) {
   const rules = [];
-  collectStyles(doc, rules, '');
+  // If the root itself is a dynamic island, the runtime handles all styling
+  if (!isNodeDynamic(doc)) {
+    collectStyles(doc, rules, '');
+  }
   if (rules.length === 0) return '';
   return `<style>\n${rules.join('\n')}\n</style>`;
 }
@@ -405,7 +420,10 @@ function collectStyles(def, rules, _parentSel = '') {
   }
 
   if (Array.isArray(def.children)) {
-    def.children.forEach(c => collectStyles(c, rules, selector));
+    def.children.forEach(c => {
+      // Skip dynamic subtrees — the runtime generates scoped styles at hydration time
+      if (!isDynamic(c)) collectStyles(c, rules, selector);
+    });
   }
 }
 

@@ -4,27 +4,20 @@
 
   "$defs": {
     "posts": {
-      "$prototype": "MarkdownCollection",
-      "$src": "../../packages/parser/md.js",
-      "src": "./content/posts/*.md",
-      "basePath": ".",
-      "sortBy": "frontmatter.date",
-      "sortOrder": "desc",
+      "$prototype": "Request",
+      "url": "/api/markdown/posts",
       "signal": true
     },
-    "currentSlug": { "type": "string", "default": "" },
+    "currentSlug": { "type": "string", "default": "getting-started" },
     "currentPost": {
-      "$prototype": "MarkdownFile",
-      "$src": "../../packages/parser/md.js",
-      "src": "./content/posts/getting-started.md",
-      "basePath": ".",
-      "directives": true,
+      "$prototype": "Request",
+      "url": "/api/markdown/post?slug=${$defs.currentSlug}",
       "signal": true
     },
     "selectPost": {
       "$prototype": "Function",
       "arguments": ["event"],
-      "body": "const slug = event.target.dataset?.slug; if (slug) $defs.currentSlug = slug;"
+      "body": "event.preventDefault(); const slug = event.currentTarget.dataset?.slug; if (slug) $defs.currentSlug = slug;"
     }
   },
 
@@ -68,18 +61,19 @@
                     "cursor": "pointer",
                     ":hover": { "textDecoration": "underline" }
                   },
-                  "textContent": { "$ref": "$map/item/frontmatter/title" },
+                  "textContent": "${$map.item?.frontmatter?.title ?? ''}",
+                  "attributes": { "data-slug": "${$map.item?.slug ?? ''}" },
                   "onclick": { "$ref": "#/$defs/selectPost" }
                 },
                 {
                   "tagName": "time",
                   "style": { "display": "block", "fontSize": "0.8rem", "color": "#888" },
-                  "textContent": { "$ref": "$map/item/frontmatter/date" }
+                  "textContent": "${$map.item?.frontmatter?.date ?? ''}"
                 },
                 {
                   "tagName": "span",
                   "style": { "fontSize": "0.75rem", "color": "#666" },
-                  "textContent": { "$ref": "$map/item/$readingTime" }
+                  "textContent": "${($map.item?.$readingTime ?? '') + ' min read'}"
                 }
               ]
             }
@@ -96,7 +90,7 @@
             {
               "tagName": "h1",
               "style": { "marginTop": "0" },
-              "textContent": { "$ref": "#/$defs/currentPost/frontmatter/title" }
+              "textContent": "${$defs.currentPost?.frontmatter?.title ?? 'Loading…'}"
             },
             {
               "tagName": "div",
@@ -104,12 +98,12 @@
               "children": [
                 {
                   "tagName": "time",
-                  "textContent": { "$ref": "#/$defs/currentPost/frontmatter/date" }
+                  "textContent": "${$defs.currentPost?.frontmatter?.date ?? ''}"
                 },
                 { "tagName": "span", "textContent": " \u00b7 " },
                 {
                   "tagName": "span",
-                  "textContent": { "$ref": "#/$defs/currentPost/$readingTime" }
+                  "textContent": "${$defs.currentPost?.$readingTime ?? ''}"
                 },
                 { "tagName": "span", "textContent": " min read" }
               ]
@@ -119,7 +113,7 @@
         {
           "tagName": "article",
           "className": "prose",
-          "innerHTML": { "$ref": "#/$defs/currentPost/$body" }
+          "innerHTML": "${$defs.currentPost?.$body ?? ''}"
         }
       ]
     }

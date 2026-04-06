@@ -1,0 +1,643 @@
+/**
+ * inline-edit.js — Contenteditable inline editing for content mode
+ *
+ * Manages the lifecycle of editing text-bearing block elements directly
+ * on the canvas. Handles rich text formatting, Enter for new paragraphs,
+ * and slash commands for inserting elements.
+ */
+
+import { MD_BLOCK, MD_INLINE } from './md-allowlist.js';
+
+// ─── Inline tag set (tags that represent rich text formatting) ─────────────
+
+/** Tags that are inline formatting inside a text block */
+const INLINE_TAGS = new Set(['em', 'strong', 'del', 'code', 'a', 'span', 'br', 'img']);
+
+/** Tags that can be edited inline (text-bearing block elements) */
+const EDITABLE_BLOCKS = new Set([
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'td', 'th', 'blockquote',
+]);
+
+// ─── Editing state ─────────────────────────────────────────────────────────
+
+let activeEl = null;        // currently contenteditable element
+let activePath = null;      // JSON path to the active element
+let commitFn = null;        // function(path, newChildren, newTextContent) to commit changes
+let splitFn = null;         // function(path, beforeChildren, afterChildren) to split paragraph
+let insertFn = null;        // function(path, elementDef) to insert after current block
+let endFn = null;           // function() called when editing stops
+let slashMenuEl = null;     // slash command menu element
+let slashMenuCleanup = null;
+
+/**
+ * Check if an element is a text-bearing editable block.
+ */
+export function isEditableBlock(el) {
+  return EDITABLE_BLOCKS.has(el.tagName.toLowerCase());
+}
+
+/**
+ * Check if an element path points to an inline child (should be hidden in layer tree).
+ */
+export function isInlineElement(node) {
+  if (!node || typeof node !== 'object') return false;
+  return INLINE_TAGS.has((node.tagName ?? 'div').toLowerCase());
+}
+
+/**
+ * Start inline editing on a canvas element.
+ *
+ * @param {HTMLElement} el - The canvas DOM element to edit
+ * @param {Array} path - JSON path to the element
+ * @param {object} callbacks - { onCommit, onSplit, onInsert, onEnd }
+ *   onCommit(path, children|null, textContent|null) — save inline content
+ *   onSplit(path, beforeChildren, afterChildren) — Enter key: split block
+ *   onInsert(path, elementDef) — slash command: insert after
+ *   onEnd() — called when editing stops (for overlay restoration)
+ */
+export function startEditing(el, path, callbacks) {
+  if (activeEl) stopEditing();
+
+  activeEl = el;
+  activePath = path;
+  commitFn = callbacks.onCommit;
+  splitFn = callbacks.onSplit;
+  insertFn = callbacks.onInsert;
+  endFn = callbacks.onEnd;
+
+  // Enable editing
+  el.contentEditable = 'true';
+  el.style.pointerEvents = 'auto';
+  el.style.outline = '2px solid var(--accent, #4a9eff)';
+  el.style.outlineOffset = '1px';
+  el.style.cursor = 'text';
+  el.focus();
+
+  // Place cursor at end
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  el.addEventListener('keydown', handleKeydown);
+  el.addEventListener('input', handleInput);
+  el.addEventListener('blur', handleBlur);
+  el.addEventListener('paste', handlePaste);
+}
+
+/**
+ * Stop editing and commit changes.
+ */
+export function stopEditing() {
+  if (!activeEl) return;
+
+  commitChanges();
+  dismissSlashMenu();
+
+  activeEl.contentEditable = 'false';
+  activeEl.style.pointerEvents = '';
+  activeEl.style.outline = '';
+  activeEl.style.outlineOffset = '';
+  activeEl.style.cursor = '';
+
+  activeEl.removeEventListener('keydown', handleKeydown);
+  activeEl.removeEventListener('input', handleInput);
+  activeEl.removeEventListener('blur', handleBlur);
+  activeEl.removeEventListener('paste', handlePaste);
+
+  activeEl = null;
+  activePath = null;
+  commitFn = null;
+  splitFn = null;
+  insertFn = null;
+
+  if (endFn) {
+    const fn = endFn;
+    endFn = null;
+    fn();
+  }
+}
+
+/**
+ * Whether inline editing is currently active.
+ */
+export function isEditing() {
+  return activeEl !== null;
+}
+
+/**
+ * Get the currently editing element.
+ */
+export function getActiveElement() {
+  return activeEl;
+}
+
+// ─── Event handlers ────────────────────────────────────────────────────────
+
+function handleKeydown(e) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    stopEditing();
+    return;
+  }
+
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    handleEnterKey();
+    return;
+  }
+
+  // Slash command trigger
+  if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
+    // Check if at start of empty block or after a space/newline
+    const sel = window.getSelection();
+    if (sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      const textBefore = getTextBeforeCursor(range);
+      if (textBefore === '' || textBefore.endsWith(' ') || textBefore.endsWith('\n')) {
+        // Let the / character be typed, then show menu on next input
+        requestAnimationFrame(() => showSlashMenu());
+        return;
+      }
+    }
+  }
+
+  // Rich text shortcuts
+  if (e.ctrlKey || e.metaKey) {
+    switch (e.key) {
+      case 'b':
+        e.preventDefault();
+        document.execCommand('bold', false);
+        break;
+      case 'i':
+        e.preventDefault();
+        document.execCommand('italic', false);
+        break;
+      case '`':
+        e.preventDefault();
+        wrapSelectionInCode();
+        break;
+    }
+  }
+
+  // Dismiss slash menu on non-matching keys
+  if (slashMenuEl && !['ArrowUp', 'ArrowDown', 'Enter', 'Backspace', 'Delete'].includes(e.key)) {
+    // Let the input handler deal with filtering
+  }
+}
+
+function handleInput() {
+  // Check if slash menu should update or dismiss
+  if (slashMenuEl) {
+    updateSlashMenu();
+  }
+}
+
+function handleBlur(e) {
+  // Don't close if clicking the slash menu
+  if (slashMenuEl && slashMenuEl.contains(e.relatedTarget)) return;
+
+  // Delay to allow click events to fire
+  setTimeout(() => {
+    if (activeEl && document.activeElement !== activeEl) {
+      stopEditing();
+    }
+  }, 150);
+}
+
+function handlePaste(e) {
+  e.preventDefault();
+  // Paste as plain text to avoid foreign HTML
+  const text = e.clipboardData.getData('text/plain');
+  document.execCommand('insertText', false, text);
+}
+
+// ─── Enter key: split paragraph ────────────────────────────────────────────
+
+function handleEnterKey() {
+  if (!splitFn || !activeEl || !activePath) return;
+
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+
+  const range = sel.getRangeAt(0);
+
+  // Create two ranges: before cursor and after cursor
+  const beforeRange = document.createRange();
+  beforeRange.setStart(activeEl, 0);
+  beforeRange.setEnd(range.startContainer, range.startOffset);
+
+  const afterRange = document.createRange();
+  afterRange.setStart(range.endContainer, range.endOffset);
+  afterRange.setEnd(activeEl, activeEl.childNodes.length);
+
+  // Extract content from both ranges
+  const beforeFrag = beforeRange.cloneContents();
+  const afterFrag = afterRange.cloneContents();
+
+  const beforeChildren = fragmentToJsonsx(beforeFrag);
+  const afterChildren = fragmentToJsonsx(afterFrag);
+
+  // Stop editing before mutating state (which will re-render)
+  const path = [...activePath];
+  activeEl.contentEditable = 'false';
+  activeEl.removeEventListener('keydown', handleKeydown);
+  activeEl.removeEventListener('input', handleInput);
+  activeEl.removeEventListener('blur', handleBlur);
+  activeEl.removeEventListener('paste', handlePaste);
+  activeEl = null;
+
+  splitFn(path, beforeChildren, afterChildren);
+}
+
+// ─── Content sync: DOM → JSONsx ────────────────────────────────────────────
+
+function commitChanges() {
+  if (!commitFn || !activeEl || !activePath) return;
+
+  const result = elementToJsonsx(activeEl);
+  commitFn(activePath, result.children ?? null, result.textContent ?? null);
+}
+
+/**
+ * Convert a contenteditable element's content to JSONsx children/textContent.
+ * Returns { textContent } for plain text or { children } for rich content.
+ */
+function elementToJsonsx(el) {
+  const nodes = el.childNodes;
+
+  // If just a single text node, use textContent
+  if (nodes.length === 0) return { textContent: '' };
+  if (nodes.length === 1 && nodes[0].nodeType === Node.TEXT_NODE) {
+    return { textContent: nodes[0].textContent };
+  }
+
+  // Mixed content → children array
+  const children = [];
+  for (const child of nodes) {
+    const jsx = domNodeToJsonsx(child);
+    if (jsx) children.push(jsx);
+  }
+
+  // If all children are just text spans, simplify to textContent
+  if (children.length === 1 && children[0].tagName === 'span' && children[0].textContent != null) {
+    return { textContent: children[0].textContent };
+  }
+
+  return { children };
+}
+
+/**
+ * Convert a DOM node to a JSONsx element definition.
+ */
+function domNodeToJsonsx(node) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = node.textContent;
+    if (!text) return null;
+    return { tagName: 'span', textContent: text };
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+  const tag = node.tagName.toLowerCase();
+  const el = { tagName: tag };
+
+  // Map browser execCommand output to our tag conventions
+  const tagMap = { b: 'strong', i: 'em', s: 'del', strike: 'del' };
+  if (tagMap[tag]) el.tagName = tagMap[tag];
+
+  // Attributes
+  if (tag === 'a' && node.href) {
+    el.attributes = { href: node.getAttribute('href') };
+    if (node.title) el.attributes.title = node.title;
+  }
+  if (tag === 'code') {
+    el.textContent = node.textContent;
+    return el;
+  }
+
+  // Recurse children
+  const childNodes = node.childNodes;
+  if (childNodes.length === 0) {
+    el.textContent = '';
+  } else if (childNodes.length === 1 && childNodes[0].nodeType === Node.TEXT_NODE) {
+    el.textContent = childNodes[0].textContent;
+  } else {
+    el.children = [];
+    for (const child of childNodes) {
+      const jsx = domNodeToJsonsx(child);
+      if (jsx) el.children.push(jsx);
+    }
+  }
+
+  return el;
+}
+
+/**
+ * Convert a DocumentFragment to a JSONsx-compatible structure.
+ * Returns { textContent } or { children }.
+ */
+function fragmentToJsonsx(frag) {
+  const nodes = frag.childNodes;
+  if (nodes.length === 0) return { textContent: '' };
+  if (nodes.length === 1 && nodes[0].nodeType === Node.TEXT_NODE) {
+    return { textContent: nodes[0].textContent };
+  }
+
+  const children = [];
+  for (const child of nodes) {
+    const jsx = domNodeToJsonsx(child);
+    if (jsx) children.push(jsx);
+  }
+
+  if (children.length === 1 && children[0].tagName === 'span' && children[0].textContent != null) {
+    return { textContent: children[0].textContent };
+  }
+
+  return children.length > 0 ? { children } : { textContent: '' };
+}
+
+// ─── Rich text helpers ─────────────────────────────────────────────────────
+
+function wrapSelectionInCode() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return;
+
+  const range = sel.getRangeAt(0);
+  const code = document.createElement('code');
+  range.surroundContents(code);
+  sel.removeAllRanges();
+}
+
+function getTextBeforeCursor(range) {
+  const preRange = document.createRange();
+  preRange.setStart(activeEl, 0);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  return preRange.toString();
+}
+
+// ─── Slash command menu ────────────────────────────────────────────────────
+
+/** Default slash command items */
+const SLASH_COMMANDS = [
+  { label: 'Heading 1',     tag: 'h1', icon: 'H1', description: 'Large heading' },
+  { label: 'Heading 2',     tag: 'h2', icon: 'H2', description: 'Medium heading' },
+  { label: 'Heading 3',     tag: 'h3', icon: 'H3', description: 'Small heading' },
+  { label: 'Paragraph',     tag: 'p',  icon: 'P',  description: 'Plain text' },
+  { label: 'Bulleted List', tag: 'ul', icon: '•',  description: 'Unordered list' },
+  { label: 'Numbered List', tag: 'ol', icon: '1.', description: 'Ordered list' },
+  { label: 'Blockquote',    tag: 'blockquote', icon: '"', description: 'Quote block' },
+  { label: 'Code Block',    tag: 'pre', icon: '<>', description: 'Fenced code' },
+  { label: 'Image',         tag: 'img', icon: '🖼', description: 'Insert image' },
+  { label: 'Horizontal Rule', tag: 'hr', icon: '—', description: 'Divider line' },
+  { label: 'Table',         tag: 'table', icon: '⊞', description: 'Insert table' },
+];
+
+/** Project-level component commands — populated externally */
+let projectComponents = [];
+
+/**
+ * Set available project components for the slash menu.
+ * @param {Array<{ label, tag, description }>} components
+ */
+export function setProjectComponents(components) {
+  projectComponents = components;
+}
+
+function showSlashMenu() {
+  dismissSlashMenu();
+
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+
+  const range = sel.getRangeAt(0);
+  const rect = range.getBoundingClientRect();
+
+  slashMenuEl = document.createElement('div');
+  slashMenuEl.className = 'slash-menu';
+  slashMenuEl.style.position = 'fixed';
+  slashMenuEl.style.left = `${rect.left}px`;
+  slashMenuEl.style.top = `${rect.bottom + 4}px`;
+  slashMenuEl.tabIndex = -1;
+
+  renderSlashItems('');
+  document.body.appendChild(slashMenuEl);
+
+  // Track filter text after the /
+  slashMenuEl._filterStart = getTextBeforeCursor(range).length;
+}
+
+function updateSlashMenu() {
+  if (!slashMenuEl || !activeEl) return;
+
+  const sel = window.getSelection();
+  if (!sel.rangeCount) { dismissSlashMenu(); return; }
+
+  const range = sel.getRangeAt(0);
+  const fullText = getTextBeforeCursor(range);
+
+  // Find the position of the last /
+  const slashIdx = fullText.lastIndexOf('/');
+  if (slashIdx < 0) { dismissSlashMenu(); return; }
+
+  const filter = fullText.slice(slashIdx + 1).toLowerCase();
+
+  // If user backspaced past the /, dismiss
+  if (fullText.length < (slashMenuEl._filterStart || 0) - 1) {
+    dismissSlashMenu();
+    return;
+  }
+
+  renderSlashItems(filter);
+
+  // If no items match, dismiss
+  if (slashMenuEl.children.length === 0) {
+    dismissSlashMenu();
+  }
+}
+
+function renderSlashItems(filter) {
+  if (!slashMenuEl) return;
+  slashMenuEl.innerHTML = '';
+
+  const allItems = [...SLASH_COMMANDS, ...projectComponents.map(c => ({
+    ...c, icon: '◆', isComponent: true,
+  }))];
+
+  const items = filter
+    ? allItems.filter(i => i.label.toLowerCase().includes(filter) || i.tag.toLowerCase().includes(filter))
+    : allItems;
+
+  let activeIdx = 0;
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const row = document.createElement('div');
+    row.className = `slash-item${i === 0 ? ' active' : ''}`;
+
+    const icon = document.createElement('span');
+    icon.className = 'slash-icon';
+    icon.textContent = item.icon;
+    row.appendChild(icon);
+
+    const info = document.createElement('span');
+    info.className = 'slash-info';
+    const label = document.createElement('span');
+    label.className = 'slash-label';
+    label.textContent = item.label;
+    info.appendChild(label);
+    if (item.description) {
+      const desc = document.createElement('span');
+      desc.className = 'slash-desc';
+      desc.textContent = item.description;
+      info.appendChild(desc);
+    }
+    row.appendChild(info);
+
+    row.onmouseenter = () => {
+      for (const r of slashMenuEl.children) r.classList.remove('active');
+      row.classList.add('active');
+      activeIdx = i;
+    };
+
+    row.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      selectSlashItem(item);
+    };
+
+    slashMenuEl.appendChild(row);
+  }
+
+  // Keyboard navigation within the menu
+  if (!slashMenuEl._keyHandler) {
+    slashMenuEl._keyHandler = (e) => {
+      if (!slashMenuEl) return;
+      const rows = slashMenuEl.querySelectorAll('.slash-item');
+      if (!rows.length) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        rows[activeIdx]?.classList.remove('active');
+        activeIdx = (activeIdx + 1) % rows.length;
+        rows[activeIdx]?.classList.add('active');
+        rows[activeIdx]?.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        rows[activeIdx]?.classList.remove('active');
+        activeIdx = (activeIdx - 1 + rows.length) % rows.length;
+        rows[activeIdx]?.classList.add('active');
+        rows[activeIdx]?.scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const match = items[activeIdx];
+        if (match) selectSlashItem(match);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        dismissSlashMenu();
+      }
+    };
+    activeEl.addEventListener('keydown', slashMenuEl._keyHandler);
+  }
+}
+
+function selectSlashItem(item) {
+  if (!activeEl || !insertFn || !activePath) return;
+
+  // Remove the /command text from the element
+  const sel = window.getSelection();
+  if (sel.rangeCount) {
+    const range = sel.getRangeAt(0);
+    const fullText = getTextBeforeCursor(range);
+    const slashIdx = fullText.lastIndexOf('/');
+    if (slashIdx >= 0) {
+      // Delete from slash position to cursor
+      const preRange = document.createRange();
+      preRange.setStart(activeEl, 0);
+      preRange.setEnd(range.startContainer, range.startOffset);
+
+      // Walk to find the text node and offset of the slash
+      const walker = document.createTreeWalker(activeEl, NodeFilter.SHOW_TEXT);
+      let charCount = 0;
+      let slashNode = null, slashOffset = 0;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (charCount + node.length > slashIdx) {
+          slashNode = node;
+          slashOffset = slashIdx - charCount;
+          break;
+        }
+        charCount += node.length;
+      }
+
+      if (slashNode) {
+        const delRange = document.createRange();
+        delRange.setStart(slashNode, slashOffset);
+        delRange.setEnd(range.startContainer, range.startOffset);
+        delRange.deleteContents();
+      }
+    }
+  }
+
+  // Commit current content before inserting
+  commitChanges();
+  dismissSlashMenu();
+
+  // Build the element definition to insert
+  const def = buildDefaultForTag(item.tag);
+
+  const path = [...activePath];
+  activeEl.contentEditable = 'false';
+  activeEl.removeEventListener('keydown', handleKeydown);
+  activeEl.removeEventListener('input', handleInput);
+  activeEl.removeEventListener('blur', handleBlur);
+  activeEl.removeEventListener('paste', handlePaste);
+  activeEl = null;
+
+  insertFn(path, def);
+}
+
+function dismissSlashMenu() {
+  if (!slashMenuEl) return;
+  if (slashMenuEl._keyHandler && activeEl) {
+    activeEl.removeEventListener('keydown', slashMenuEl._keyHandler);
+  }
+  slashMenuEl.remove();
+  slashMenuEl = null;
+}
+
+/**
+ * Build a default JSONsx element definition for a given tag.
+ */
+function buildDefaultForTag(tag) {
+  switch (tag) {
+    case 'h1': return { tagName: 'h1', textContent: 'Heading' };
+    case 'h2': return { tagName: 'h2', textContent: 'Heading' };
+    case 'h3': return { tagName: 'h3', textContent: 'Heading' };
+    case 'h4': return { tagName: 'h4', textContent: 'Heading' };
+    case 'h5': return { tagName: 'h5', textContent: 'Heading' };
+    case 'h6': return { tagName: 'h6', textContent: 'Heading' };
+    case 'p':  return { tagName: 'p', textContent: '' };
+    case 'ul': return { tagName: 'ul', children: [{ tagName: 'li', textContent: 'Item' }] };
+    case 'ol': return { tagName: 'ol', children: [{ tagName: 'li', textContent: 'Item' }] };
+    case 'blockquote': return { tagName: 'blockquote', children: [{ tagName: 'p', textContent: 'Quote' }] };
+    case 'pre': return { tagName: 'pre', children: [{ tagName: 'code', textContent: '' }] };
+    case 'hr': return { tagName: 'hr' };
+    case 'img': return { tagName: 'img', attributes: { src: '', alt: 'Image' } };
+    case 'table': return {
+      tagName: 'table', children: [
+        { tagName: 'thead', children: [{ tagName: 'tr', children: [
+          { tagName: 'th', textContent: 'Header' },
+        ]}]},
+        { tagName: 'tbody', children: [{ tagName: 'tr', children: [
+          { tagName: 'td', textContent: 'Cell' },
+        ]}]},
+      ]
+    };
+    default:
+      // Custom component / directive
+      return { tagName: tag, textContent: '' };
+  }
+}

@@ -95,6 +95,8 @@ export function createState(doc) {
     dirty: false,
     fileHandle: null,
     handlersSource: null,
+    mode: 'component',           // 'component' | 'content'
+    content: { frontmatter: {} }, // frontmatter metadata for .md files
     ui: {
       leftTab: 'layers',      // 'layers' | 'blocks'
       rightTab: 'properties',  // 'properties' | 'source' | 'handlers'

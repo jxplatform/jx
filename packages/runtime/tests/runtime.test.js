@@ -575,11 +575,12 @@ describe('resolvePrototype', () => {
     expect(result).toBeNull();
   });
 
-  test('unknown $prototype: warns and returns null', async () => {
+  test('unknown $prototype: warns and returns ref(null)', async () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     const $defs = reactive({});
     const result = await resolvePrototype({ $prototype: 'Unknown' }, $defs, 'u');
-    expect(result).toBeNull();
+    expect(isRef(result)).toBe(true);
+    expect(result.value).toBeNull();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Unknown'));
     warn.mockRestore();
   });

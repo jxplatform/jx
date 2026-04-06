@@ -15,6 +15,22 @@ import {
   pathsEqual, parentElementPath, childIndex, isAncestor,
 } from './state.js';
 
+import { renderNode as runtimeRenderNode, buildScope } from '@jsonsx/runtime';
+
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkStringify from 'remark-stringify';
+import remarkFrontmatter from 'remark-frontmatter';
+import remarkGfm from 'remark-gfm';
+import remarkDirective from 'remark-directive';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { mdToJsonsx, jsonsxToMd } from './md-convert.js';
+import { MD_ALL, MD_BLOCK, MD_INLINE, isValidChild } from './md-allowlist.js';
+import {
+  startEditing, stopEditing, isEditing, getActiveElement,
+  isEditableBlock, isInlineElement,
+} from './inline-edit.js';
+
 import {
   draggable,
   dropTargetForElements,
@@ -63,6 +79,76 @@ const VOID_ELEMENTS = new Set([
  * Built dynamically in renderCanvas() based on $media definitions.
  */
 let canvasPanels = [];
+
+/** Whether the canvas is in preview mode (live interactivity) vs edit mode */
+let previewMode = false;
+
+/** Cached $defs scope from last runtime render */
+let liveScope = null;
+
+/**
+ * Strip all on* event handler properties from a JSONsx document tree (deep clone).
+ * Returns a new object safe for edit-mode rendering where clicks should be intercepted.
+ */
+function stripEventHandlers(node) {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(stripEventHandlers);
+  const out = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (k.startsWith('on') && typeof v === 'object' && v?.$ref) continue;
+    if (k === 'children') {
+      out.children = Array.isArray(v) ? v.map(stripEventHandlers) : stripEventHandlers(v);
+    } else if (k === 'cases' && typeof v === 'object') {
+      const cases = {};
+      for (const [ck, cv] of Object.entries(v)) cases[ck] = stripEventHandlers(cv);
+      out.cases = cases;
+    } else if (k === '$defs' || k === 'style' || k === 'attributes' || k === '$media') {
+      out[k] = v; // preserve as-is
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Render a JSONsx document into a canvas element using the real runtime.
+ * Populates elToPath for each created element via onNodeCreated callback.
+ * Returns the live $defs scope on success, null on failure.
+ */
+async function renderCanvasLive(doc, canvasEl) {
+  canvasEl.innerHTML = '';
+
+  // Apply content mode typography styling
+  if (S.mode === 'content') {
+    canvasEl.setAttribute('data-content-mode', '');
+  } else {
+    canvasEl.removeAttribute('data-content-mode');
+  }
+
+  const renderDoc = previewMode ? structuredClone(doc) : stripEventHandlers(doc);
+  try {
+    const $defs = await buildScope(renderDoc, {});
+    const el = runtimeRenderNode(renderDoc, $defs, {
+      onNodeCreated(el, path) {
+        elToPath.set(el, path);
+      },
+      _path: [],
+    });
+    if (!previewMode) {
+      // Disable pointer events on all rendered elements for edit mode
+      el.style.pointerEvents = 'none';
+      for (const child of el.querySelectorAll('*')) {
+        child.style.pointerEvents = 'none';
+      }
+    }
+    canvasEl.appendChild(el);
+    return $defs;
+  } catch (err) {
+    console.warn('JSONsx Studio: runtime render failed, falling back to structural preview', err);
+    return null;
+  }
+}
 
 // ─── Webdata: datalists for autocomplete ──────────────────────────────────────
 
@@ -207,9 +293,7 @@ function renderCanvas() {
     const panel = createCanvasPanel(null, null, true);
     canvasWrap.appendChild(panel.element);
     canvasPanels.push(panel);
-    renderCanvasNode(S.document, [], panel.canvas, new Set(), featureToggles);
-    registerPanelDnD(panel);
-    registerPanelEvents(panel);
+    renderCanvasIntoPanel(panel, new Set(), featureToggles);
     return;
   }
 
@@ -219,9 +303,7 @@ function renderCanvas() {
   const basePanel = createCanvasPanel('base', `Base (${baseWidth}px)`, false, baseWidth);
   canvasWrap.appendChild(basePanel.element);
   canvasPanels.push(basePanel);
-  renderCanvasNode(S.document, [], basePanel.canvas, baseActive, featureToggles);
-  registerPanelDnD(basePanel);
-  registerPanelEvents(basePanel);
+  renderCanvasIntoPanel(basePanel, baseActive, featureToggles);
 
   // One panel per size breakpoint
   for (const bp of sizeBreakpoints) {
@@ -230,13 +312,30 @@ function renderCanvas() {
     const panel = createCanvasPanel(bp.name, label, false, bp.width);
     canvasWrap.appendChild(panel.element);
     canvasPanels.push(panel);
-    renderCanvasNode(S.document, [], panel.canvas, active, featureToggles);
-    registerPanelDnD(panel);
-    registerPanelEvents(panel);
+    renderCanvasIntoPanel(panel, active, featureToggles);
   }
 
   // Highlight active panel header
   updateActivePanelHeaders();
+}
+
+/**
+ * Render document into a single canvas panel.
+ * Tries runtime rendering first, falls back to structural preview.
+ */
+function renderCanvasIntoPanel(panel, activeBreakpoints, featureToggles) {
+  renderCanvasLive(S.document, panel.canvas).then(scope => {
+    if (scope) {
+      liveScope = scope;
+      statusMessage('Runtime render OK', 1500);
+    } else {
+      // Fallback to structural preview
+      renderCanvasNode(S.document, [], panel.canvas, activeBreakpoints, featureToggles);
+    }
+    registerPanelDnD(panel);
+    registerPanelEvents(panel);
+    renderOverlays();
+  });
 }
 
 /**
@@ -566,6 +665,18 @@ function renderOverlays() {
     p.overlay.appendChild(p.dropLine);
   }
 
+  // In preview mode, hide overlays and click interceptors
+  if (previewMode) {
+    for (const p of canvasPanels) {
+      p.overlayClk.style.pointerEvents = 'none';
+    }
+    if (selDragCleanup) { selDragCleanup(); selDragCleanup = null; }
+    return;
+  }
+  for (const p of canvasPanels) {
+    p.overlayClk.style.pointerEvents = '';
+  }
+
   if (selDragCleanup) { selDragCleanup(); selDragCleanup = null; }
 
   // Draw hover overlay on whichever panel the hover is on
@@ -666,21 +777,56 @@ function registerPanelEvents(panel) {
   }
 
   overlayClk.addEventListener('click', (e) => {
+    // If inline editing is active, treat click outside as blur
+    if (isEditing()) {
+      stopEditing();
+    }
+
     const elements = withPanelPointerEvents(() =>
       document.elementsFromPoint(e.clientX, e.clientY)
     );
+
     for (const el of elements) {
       if (canvas.contains(el) && el !== canvas) {
         const path = elToPath.get(el);
         if (path) {
           const newMedia = mediaName === 'base' ? null : (mediaName ?? null);
           S = { ...S, ui: { ...S.ui, activeMedia: newMedia } };
+
+          // In content mode: if clicking an already-selected editable block, enter inline editing
+          if (S.mode === 'content' && pathsEqual(path, S.selection) && isEditableBlock(el)) {
+            enterInlineEdit(el, path);
+            return;
+          }
+
           update(selectNode(S, path));
           return;
         }
       }
     }
     update(selectNode(S, null));
+  });
+
+  // Double-click shortcut for immediate inline editing in content mode
+  overlayClk.addEventListener('dblclick', (e) => {
+    if (S.mode !== 'content') return;
+
+    const elements = withPanelPointerEvents(() =>
+      document.elementsFromPoint(e.clientX, e.clientY)
+    );
+
+    for (const el of elements) {
+      if (canvas.contains(el) && el !== canvas) {
+        const path = elToPath.get(el);
+        if (path && isEditableBlock(el)) {
+          const newMedia = mediaName === 'base' ? null : (mediaName ?? null);
+          S = { ...S, ui: { ...S.ui, activeMedia: newMedia } };
+          update(selectNode(S, path));
+          enterInlineEdit(el, path);
+          return;
+        }
+      }
+    }
   });
 
   overlayClk.addEventListener('contextmenu', (e) => {
@@ -720,6 +866,114 @@ function registerPanelEvents(panel) {
       S = hoverNode(S, null);
       renderOverlays();
     }
+  });
+}
+
+// ─── Inline editing bridge ────────────────────────────────────────────────────
+
+/**
+ * Enter inline editing mode on a canvas element.
+ * Hides the overlay for the element and makes it contenteditable.
+ */
+function enterInlineEdit(el, path) {
+  // Hide overlays while editing
+  for (const p of canvasPanels) {
+    p.overlay.style.display = 'none';
+    p.overlayClk.style.pointerEvents = 'none';
+  }
+
+  startEditing(el, path, {
+    onCommit(commitPath, children, textContent) {
+      // Update the JSONsx node with the edited content
+      if (children) {
+        let s = updateProperty(S, commitPath, 'textContent', undefined);
+        s = updateProperty(s, commitPath, 'children', children);
+        update(s);
+      } else if (textContent != null) {
+        let s = updateProperty(S, commitPath, 'children', undefined);
+        s = updateProperty(s, commitPath, 'textContent', textContent);
+        update(s);
+      }
+    },
+
+    onSplit(splitPath, before, after) {
+      // Update current element with "before" content
+      const tag = getNodeAtPath(S.document, splitPath)?.tagName ?? 'p';
+      let s = S;
+
+      if (before.textContent != null) {
+        s = updateProperty(s, splitPath, 'children', undefined);
+        s = updateProperty(s, splitPath, 'textContent', before.textContent);
+      } else if (before.children) {
+        s = updateProperty(s, splitPath, 'textContent', undefined);
+        s = updateProperty(s, splitPath, 'children', before.children);
+      }
+
+      // Insert new element after with "after" content
+      const parentPath = parentElementPath(splitPath);
+      const idx = childIndex(splitPath);
+      const newNode = { tagName: tag };
+      if (after.textContent != null) {
+        newNode.textContent = after.textContent;
+      } else if (after.children) {
+        newNode.children = after.children;
+      } else {
+        newNode.textContent = '';
+      }
+
+      s = insertNode(s, parentPath, idx + 1, newNode);
+      // Select the new element
+      const newPath = [...parentPath, 'children', idx + 1];
+      s = selectNode(s, newPath);
+      update(s);
+
+      // Re-enter editing on the new element after render
+      requestAnimationFrame(() => {
+        const activePanel = getActivePanel();
+        if (activePanel) {
+          const newEl = findCanvasElement(newPath, activePanel.canvas);
+          if (newEl && isEditableBlock(newEl)) {
+            enterInlineEdit(newEl, newPath);
+            // Place cursor at start of new element
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(newEl);
+            range.collapse(true); // collapse to start
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+        }
+      });
+    },
+
+    onInsert(afterPath, elementDef) {
+      const parentPath = parentElementPath(afterPath);
+      const idx = childIndex(afterPath);
+      let s = insertNode(S, parentPath, idx + 1, structuredClone(elementDef));
+      const newPath = [...parentPath, 'children', idx + 1];
+      s = selectNode(s, newPath);
+      update(s);
+
+      // If the inserted element is editable, enter editing
+      requestAnimationFrame(() => {
+        const activePanel = getActivePanel();
+        if (activePanel) {
+          const newEl = findCanvasElement(newPath, activePanel.canvas);
+          if (newEl && isEditableBlock(newEl)) {
+            enterInlineEdit(newEl, newPath);
+          }
+        }
+      });
+    },
+
+    onEnd() {
+      // Restore overlays after inline editing ends
+      for (const p of canvasPanels) {
+        p.overlay.style.display = '';
+        p.overlayClk.style.pointerEvents = '';
+      }
+      renderOverlays();
+    },
   });
 }
 
@@ -775,6 +1029,9 @@ function renderLayers(container) {
       }
     }
     if (hidden) continue;
+
+    // In content mode, skip inline elements (they're part of the parent text block)
+    if (S.mode === 'content' && path.length > 0 && isInlineElement(node)) continue;
 
     const row = document.createElement('div');
     row.className = `layer-row${pathsEqual(path, S.selection) ? ' selected' : ''}`;
@@ -2129,6 +2386,21 @@ function renderToolbar() {
   }));
   toolbar.appendChild(zoomGroup);
 
+  // Edit / Preview toggle
+  const modeGroup = group();
+  const modeBtn = document.createElement('button');
+  modeBtn.className = `tb-toggle${previewMode ? ' active' : ''}`;
+  modeBtn.textContent = previewMode ? '▶ Preview' : '✎ Edit';
+  modeBtn.title = previewMode ? 'Switch to edit mode' : 'Switch to live preview';
+  modeBtn.onclick = () => {
+    previewMode = !previewMode;
+    renderCanvas();
+    renderOverlays();
+    renderToolbar();
+  };
+  modeGroup.appendChild(modeBtn);
+  toolbar.appendChild(modeGroup);
+
   // Feature toggles (non-size media queries like --dark)
   const { featureQueries } = parseMediaEntries(S.document.$media);
   if (featureQueries.length > 0) {
@@ -2183,6 +2455,7 @@ function tbBtn(label, onClick) {
 
 function renderStatusbar() {
   const parts = [];
+  if (S.mode === 'content') parts.push('Content Mode');
   if (S.selection) {
     const node = getNodeAtPath(S.document, S.selection);
     parts.push(`Selected: ${nodeLabel(node)}`);
@@ -2206,17 +2479,23 @@ async function openFile() {
     // File System Access API
     if ('showOpenFilePicker' in window) {
       const [handle] = await window.showOpenFilePicker({
-        types: [{ description: 'JSONsx Component', accept: { 'application/json': ['.json'] } }],
+        types: [
+          { description: 'JSONsx Component', accept: { 'application/json': ['.json'] } },
+          { description: 'Markdown Content', accept: { 'text/markdown': ['.md'] } },
+        ],
       });
       const file = await handle.getFile();
       const text = await file.text();
-      const doc = JSON.parse(text);
-      S = createState(doc);
-      S.fileHandle = handle;
-      S.dirty = false;
 
-      // Try to load companion .js file
-      await loadCompanionJS(handle);
+      if (handle.name.endsWith('.md')) {
+        loadMarkdown(text, handle);
+      } else {
+        const doc = JSON.parse(text);
+        S = createState(doc);
+        S.fileHandle = handle;
+        S.dirty = false;
+        await loadCompanionJS(handle);
+      }
 
       render();
       statusMessage(`Opened ${handle.name}`);
@@ -2224,14 +2503,20 @@ async function openFile() {
       // Fallback: file input
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.json';
+      input.accept = '.json,.md';
       input.onchange = async () => {
         const file = input.files[0];
         if (!file) return;
         const text = await file.text();
-        const doc = JSON.parse(text);
-        S = createState(doc);
-        S.dirty = false;
+
+        if (file.name.endsWith('.md')) {
+          loadMarkdown(text, null);
+        } else {
+          const doc = JSON.parse(text);
+          S = createState(doc);
+          S.dirty = false;
+        }
+
         render();
         statusMessage(`Opened ${file.name}`);
       };
@@ -2240,6 +2525,35 @@ async function openFile() {
   } catch (e) {
     if (e.name !== 'AbortError') statusMessage(`Error: ${e.message}`);
   }
+}
+
+/**
+ * Load a markdown string into the studio in content mode.
+ * Parses frontmatter, converts mdast → JSONsx element tree.
+ */
+function loadMarkdown(source, fileHandle) {
+  const processor = unified()
+    .use(remarkParse)
+    .use(remarkFrontmatter, ['yaml'])
+    .use(remarkGfm)
+    .use(remarkDirective);
+
+  const mdast = processor.parse(source);
+
+  // Extract frontmatter from the first YAML node
+  let frontmatter = {};
+  const yamlNode = mdast.children.find(n => n.type === 'yaml');
+  if (yamlNode) {
+    try { frontmatter = parseYaml(yamlNode.value) ?? {}; } catch {}
+  }
+
+  const jsonsxTree = mdToJsonsx(mdast);
+
+  S = createState(jsonsxTree);
+  S.mode = 'content';
+  S.content = { frontmatter };
+  S.fileHandle = fileHandle;
+  S.dirty = false;
 }
 
 async function loadCompanionJS(handle) {
@@ -2259,33 +2573,57 @@ async function loadCompanionJS(handle) {
 
 async function saveFile() {
   try {
-    const json = JSON.stringify(S.document, null, 2);
+    const isContent = S.mode === 'content';
+    let output, mimeType, ext, description;
+
+    if (isContent) {
+      // Convert JSONsx tree → mdast → markdown string
+      const mdast = jsonsxToMd(S.document);
+      const md = unified()
+        .use(remarkStringify, { bullet: '-', emphasis: '*', strong: '*' })
+        .stringify(mdast);
+
+      // Prepend frontmatter if present
+      const fm = S.content?.frontmatter;
+      const hasFrontmatter = fm && Object.keys(fm).length > 0;
+      output = hasFrontmatter
+        ? `---\n${stringifyYaml(fm).trim()}\n---\n\n${md}`
+        : md;
+      mimeType = 'text/markdown';
+      ext = '.md';
+      description = 'Markdown Content';
+    } else {
+      output = JSON.stringify(S.document, null, 2);
+      mimeType = 'application/json';
+      ext = '.json';
+      description = 'JSONsx Component';
+    }
 
     if (S.fileHandle && 'createWritable' in S.fileHandle) {
       const writable = await S.fileHandle.createWritable();
-      await writable.write(json);
+      await writable.write(output);
       await writable.close();
       S = { ...S, dirty: false };
       renderToolbar();
       statusMessage('Saved');
     } else if ('showSaveFilePicker' in window) {
       const handle = await window.showSaveFilePicker({
-        suggestedName: 'component.json',
-        types: [{ description: 'JSONsx Component', accept: { 'application/json': ['.json'] } }],
+        suggestedName: isContent ? 'content.md' : 'component.json',
+        types: [{ description, accept: { [mimeType]: [ext] } }],
       });
       const writable = await handle.createWritable();
-      await writable.write(json);
+      await writable.write(output);
       await writable.close();
       S = { ...S, fileHandle: handle, dirty: false };
       renderToolbar();
       statusMessage(`Saved as ${handle.name}`);
     } else {
       // Fallback: download
-      const blob = new Blob([json], { type: 'application/json' });
+      const blob = new Blob([output], { type: mimeType });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'component.json';
+      a.download = isContent ? 'content.md' : 'component.json';
       a.click();
       URL.revokeObjectURL(url);
       S = { ...S, dirty: false };
@@ -2302,8 +2640,13 @@ async function saveFile() {
 document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
 
-  // Don't intercept when typing in inputs
+  // Don't intercept when typing in inputs or contenteditable
   if (e.target instanceof HTMLElement && e.target.matches('input, textarea, select')) {
+    if (mod && e.key === 's') { e.preventDefault(); saveFile(); }
+    return;
+  }
+  if (isEditing()) {
+    // Let inline editor handle its own keyboard events; only intercept Save
     if (mod && e.key === 's') { e.preventDefault(); saveFile(); }
     return;
   }
