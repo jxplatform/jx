@@ -15,7 +15,7 @@ import {
   toCSSText,
   RESERVED_KEYS,
   JSONsx,
-} from '../runtime/runtime.js';
+} from '../runtime.js';
 
 const wait = () => new Promise(r => setTimeout(r, 0));
 function mkState(v) { return new Signal.State(v); }

@@ -2,7 +2,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 try { GlobalRegistrator.register(); } catch {}
 
 import { describe, test, expect, mock } from 'bun:test';
-import { buildScope, JSONsx, isSignal } from '../runtime/runtime.js';
+import { buildScope, JSONsx, isSignal } from '../runtime.js';
 
 const wait = () => new Promise(r => setTimeout(r, 0));
 const BASE = 'http://localhost/';

@@ -1,0 +1,15 @@
+{
+  "name": "@jsonsx/examples",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run server.js"
+  },
+  "dependencies": {
+    "@jsonsx/runtime": "workspace:*",
+    "@jsonsx/compiler": "workspace:*",
+    "@jsonsx/parser": "workspace:*",
+    "@jsonsx/studio": "workspace:*"
+  }
+}

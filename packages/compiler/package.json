@@ -1,0 +1,20 @@
+{
+  "name": "@jsonsx/compiler",
+  "version": "1.0.0",
+  "description": "JSONsx static HTML compiler and island detector",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./compiler.js"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@jsonsx/runtime": "workspace:*",
+    "@apidevtools/json-schema-ref-parser": "^15.3.5"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^20.8.9"
+  }
+}

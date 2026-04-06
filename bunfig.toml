@@ -1,4 +1,3 @@
 [test]
-preload = ["./tests/setup.js"]
 coverage = true
 coverageReporter = ["text"]

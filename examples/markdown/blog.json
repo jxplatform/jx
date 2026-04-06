@@ -5,7 +5,7 @@
   "$defs": {
     "$posts": {
       "$prototype": "MarkdownCollection",
-      "$src": "../../parser/md/md.js",
+      "$src": "../../packages/parser/md.js",
       "src": "./content/posts/*.md",
       "basePath": ".",
       "sortBy": "frontmatter.date",
@@ -15,7 +15,7 @@
     "$currentSlug": { "type": "string", "default": "" },
     "$currentPost": {
       "$prototype": "MarkdownFile",
-      "$src": "../../parser/md/md.js",
+      "$src": "../../packages/parser/md.js",
       "src": "./content/posts/getting-started.md",
       "basePath": ".",
       "directives": true,

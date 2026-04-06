@@ -1,54 +1,13 @@
 {
-  "name": "jsonsx",
+  "name": "jsonsx-workspace",
   "version": "1.0.0",
-  "description": "JSON-native reactive web component runtime",
+  "private": true,
   "type": "module",
-  "license": "MIT",
-  "exports": {
-    ".": "./runtime/runtime.js",
-    "./effect": "./runtime/effect.js",
-    "./compiler": "./compiler/compiler.js",
-    "./schema": "./schema/schema.js"
-  },
+  "workspaces": ["packages/*", "examples"],
   "scripts": {
     "dev": "bun run examples/server.js",
-    "build": "bun build ./runtime/runtime.js --outdir dist --target browser --sourcemap=linked && bun build ./studio/studio.js --outdir dist/studio --target browser --sourcemap=linked",
-    "build:runtime": "bun build ./runtime/runtime.js --outdir dist --target browser --sourcemap=linked",
-    "build:studio": "bun build ./studio/studio.js --outdir dist/studio --target browser --sourcemap=linked",
-    "gen:webdata": "bun run studio/gen-webdata.js",
-    "schema": "bun run ./schema/schema.js ./schema/schema.json",
-    "compile": "bun run ./compiler/compiler.js",
+    "build": "bun run --cwd packages/runtime build && bun run --cwd packages/studio build",
     "test": "bun test",
     "test:coverage": "bun test --coverage"
-  },
-  "files": [
-    "runtime/runtime.js",
-    "runtime/effect.js",
-    "compiler/compiler.js",
-    "schema/schema.js",
-    "examples/"
-  ],
-  "dependencies": {
-    "@apidevtools/json-schema-ref-parser": "^15.3.5",
-    "@atlaskit/pragmatic-drag-and-drop": "^1.7.10",
-    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0",
-    "glob": "^13.0.6",
-    "mdast-util-to-string": "^4.0.0",
-    "rehype-stringify": "^10.0.1",
-    "remark-directive": "^4.0.0",
-    "remark-frontmatter": "^5.0.0",
-    "remark-gfm": "^4.0.1",
-    "remark-parse": "^11.0.0",
-    "remark-parse-frontmatter": "^1.0.3",
-    "remark-rehype": "^11.1.2",
-    "signal-polyfill": "^0.2.2",
-    "unified": "^11.0.5",
-    "unist-util-visit": "^5.1.0"
-  },
-  "devDependencies": {
-    "@happy-dom/global-registrator": "^20.8.9",
-    "@webref/css": "^8.5.2",
-    "@webref/elements": "^2.7.0",
-    "@webref/idl": "^3.75.1"
   }
 }

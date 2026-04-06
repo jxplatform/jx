@@ -15,7 +15,7 @@ import { watch } from 'fs';
 
 async function buildRuntime() {
   const result = await Bun.build({
-    entrypoints: ['./runtime/runtime.js'],
+    entrypoints: ['./packages/runtime/runtime.js'],
     outdir:      './dist',
     target:      'browser',
     format:      'esm',
@@ -27,7 +27,7 @@ async function buildRuntime() {
 
 async function buildStudio() {
   const result = await Bun.build({
-    entrypoints: ['./studio/studio.js'],
+    entrypoints: ['./packages/studio/studio.js'],
     outdir:      './dist/studio',
     target:      'browser',
     format:      'esm',

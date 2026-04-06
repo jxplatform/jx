@@ -1,9 +1,9 @@
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
-GlobalRegistrator.register();
+try { GlobalRegistrator.register(); } catch { /* already registered */ }
 
 import { describe, test, expect } from 'bun:test';
 import { Signal } from 'signal-polyfill';
-import { effect } from '../runtime/effect.js';
+import { effect } from '../effect.js';
 
 describe('effect', () => {
   test('runs fn immediately on creation', () => {

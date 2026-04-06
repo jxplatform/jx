@@ -1,0 +1,24 @@
+{
+  "name": "@jsonsx/studio",
+  "version": "1.0.0",
+  "description": "JSONsx Studio — visual builder for JSONsx documents",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./studio.js"
+  },
+  "scripts": {
+    "build": "bun build ./studio.js --outdir ../../dist/studio --target browser --sourcemap=linked",
+    "gen:webdata": "bun run gen-webdata.js",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@atlaskit/pragmatic-drag-and-drop": "^1.7.10",
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0"
+  },
+  "devDependencies": {
+    "@webref/css": "^8.5.2",
+    "@webref/elements": "^2.7.0",
+    "@webref/idl": "^3.75.1"
+  }
+}

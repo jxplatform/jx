@@ -3,7 +3,7 @@ try { GlobalRegistrator.register(); } catch {}
 
 import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { Signal } from 'signal-polyfill';
-import { resolvePrototype, isSignal } from '../runtime/runtime.js';
+import { resolvePrototype, isSignal } from '../runtime.js';
 
 const wait = () => new Promise(r => setTimeout(r, 0));
 

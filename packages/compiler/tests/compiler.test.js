@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { compile, isDynamic } from '../compiler/compiler.js';
+import { compile, isDynamic } from '../compiler.js';
 
 // ─── isDynamic — Five-Shape $defs Grammar ────────────────────────────────────
 

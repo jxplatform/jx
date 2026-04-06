@@ -1,0 +1,19 @@
+{
+  "name": "@jsonsx/schema",
+  "version": "1.0.0",
+  "description": "JSON Schema 2020-12 meta-schema generator for JSONsx documents",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./schema.js"
+  },
+  "scripts": {
+    "schema": "bun run schema.js ./schema.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@webref/css": "^8.5.2",
+    "@webref/elements": "^2.7.0",
+    "@webref/idl": "^3.75.1"
+  }
+}

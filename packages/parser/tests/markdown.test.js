@@ -10,14 +10,14 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
 try { GlobalRegistrator.register(); } catch { /* already registered */ }
 
-import { buildScope, resolvePrototype, isSignal, RESERVED_KEYS } from '../runtime/runtime.js';
-import { MarkdownFile, MarkdownCollection, MarkdownDirective } from '../parser/md/md.js';
+import { buildScope, resolvePrototype, isSignal, RESERVED_KEYS } from '@jsonsx/runtime';
+import { MarkdownFile, MarkdownCollection, MarkdownDirective } from '../md.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const FIXTURE_DIR = join(__dirname, '..', 'examples', 'markdown', 'content', 'posts');
+const FIXTURE_DIR = join(__dirname, '..', '..', '..', 'examples', 'markdown', 'content', 'posts');
 
 // ─── MarkdownFile ─────────────────────────────────────────────────────────────
 
@@ -452,7 +452,7 @@ describe('Runtime external prototype ($src)', () => {
   test('resolvePrototype with $src loads MarkdownFile', async () => {
     const def = {
       $prototype: 'MarkdownFile',
-      $src: resolvePath(__dirname, '..', 'parser', 'md', 'md.js'),
+      $src: resolvePath(__dirname, '..', 'md.js'),
       src: join(FIXTURE_DIR, 'getting-started.md'),
       signal: true,
     };
@@ -466,7 +466,7 @@ describe('Runtime external prototype ($src)', () => {
   test('resolvePrototype with $src loads MarkdownCollection', async () => {
     const def = {
       $prototype: 'MarkdownCollection',
-      $src: resolvePath(__dirname, '..', 'parser', 'md', 'md.js'),
+      $src: resolvePath(__dirname, '..', 'md.js'),
       src: join(FIXTURE_DIR, '*.md'),
       sortBy: 'frontmatter.date',
       sortOrder: 'desc',
@@ -483,7 +483,7 @@ describe('Runtime external prototype ($src)', () => {
   test('resolvePrototype strips reserved keys from config', async () => {
     const def = {
       $prototype: 'MarkdownFile',
-      $src: resolvePath(__dirname, '..', 'parser', 'md', 'md.js'),
+      $src: resolvePath(__dirname, '..', 'md.js'),
       src: join(FIXTURE_DIR, 'getting-started.md'),
       signal: true,
       timing: 'client',
@@ -499,7 +499,7 @@ describe('Runtime external prototype ($src)', () => {
     // MarkdownCollection is a named export in md.js
     const def = {
       $prototype: 'MC',
-      $src: resolvePath(__dirname, '..', 'parser', 'md', 'md.js'),
+      $src: resolvePath(__dirname, '..', 'md.js'),
       $export: 'MarkdownCollection',
       src: join(FIXTURE_DIR, '*.md'),
       limit: 1,
@@ -515,7 +515,7 @@ describe('Runtime external prototype ($src)', () => {
   test('resolvePrototype throws for missing export', async () => {
     const def = {
       $prototype: 'NonExistentClass',
-      $src: resolvePath(__dirname, '..', 'parser', 'md', 'md.js'),
+      $src: resolvePath(__dirname, '..', 'md.js'),
       signal: true,
     };
     await expect(resolvePrototype(def, {}, '$x')).rejects.toThrow('not found');
@@ -526,7 +526,7 @@ describe('Runtime external prototype ($src)', () => {
       $defs: {
         $post: {
           $prototype: 'MarkdownFile',
-          $src: resolvePath(__dirname, '..', 'parser', 'md', 'md.js'),
+          $src: resolvePath(__dirname, '..', 'md.js'),
           src: join(FIXTURE_DIR, 'getting-started.md'),
           signal: true,
         },

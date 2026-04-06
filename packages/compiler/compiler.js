@@ -22,7 +22,7 @@
  */
 
 import $RefParser from '@apidevtools/json-schema-ref-parser';
-import { camelToKebab, toCSSText, RESERVED_KEYS } from '../runtime/runtime.js';
+import { camelToKebab, toCSSText, RESERVED_KEYS } from '@jsonsx/runtime';
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
