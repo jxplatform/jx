@@ -1,7 +1,7 @@
 # JSONsx Specification
 ## Declarative Document Object Model — JSON Edition
 
-**Version:** 0.9.0-draft
+**Version:** 1.0.0-draft
 **Status:** In Progress
 **License:** MIT
 
@@ -12,40 +12,40 @@
 1. [Overview](#1-overview)
 2. [Philosophy](#2-philosophy)
 3. [Document Format](#3-document-format)
-4. [The Component Pair Model](#4-the-component-pair-model)
-5. [Signal Declarations](#5-signal-declarations)
-6. [Reference System](#6-reference-system)
-7. [Element Definitions](#7-element-definitions)
-8. [Styling](#8-styling)
-9. [Event Handlers](#9-event-handlers)
+4. [The Component Model](#4-the-component-model)
+5. [The `$defs` Grammar](#5-the-defs-grammar)
+6. [Universal Reactivity](#6-universal-reactivity)
+7. [Reference System](#7-reference-system)
+8. [Element Definitions](#8-element-definitions)
+9. [Styling](#9-styling)
 10. [Dynamic Mapped Arrays](#10-dynamic-mapped-arrays)
 11. [Web API Namespaces](#11-web-api-namespaces)
 12. [External Class Integration](#12-external-class-integration)
 13. [Component Encapsulation](#13-component-encapsulation)
-14. [Computed Expressions](#14-computed-expressions)
-15. [Dynamic Component Switching](#15-dynamic-component-switching)
-16. [Scope Rules](#16-scope-rules)
-17. [Compilation Model](#17-compilation-model)
-18. [Runtime Pipeline](#18-runtime-pipeline)
-19. [Reserved Keywords](#19-reserved-keywords)
-20. [Standards Alignment](#20-standards-alignment)
+14. [Dynamic Component Switching](#14-dynamic-component-switching)
+15. [Scope Rules](#15-scope-rules)
+16. [Compilation Model](#16-compilation-model)
+17. [Runtime Pipeline](#17-runtime-pipeline)
+18. [Reserved Keywords](#18-reserved-keywords)
+19. [Standards Alignment](#19-standards-alignment)
 
 ---
 
 ## 1. Overview
 
-JSONsx is a schema and runtime for building reactive web applications using plain JSON. A JSONsx application is a tree of JSON objects whose structure mirrors the DOM API, whose reactivity is powered by the TC39 Signals proposal, and whose behavior is implemented in companion JavaScript files.
+JSONsx is a schema and runtime for building reactive web applications using plain JSON. A JSONsx application is a tree of JSON objects whose structure mirrors the DOM API, whose reactivity is powered by the TC39 Signals proposal, and whose behavior is declared in `$defs` entries as inline functions or external module references.
 
-The core premise: **structure and state are data; behavior is code; the two are kept strictly separate and connected explicitly.**
+The core premise: **structure and state are data; the shape of each `$defs` entry determines its type and behavior — no additional flags required in the common case.**
 
-Every JSONsx application ships as pairs of files:
+A JSONsx component is a single `.json` file that can be fully self-describing:
 
 ```
-component.json   ← structure, styling, signal declarations, bindings
-component.js     ← event handlers, computed logic, lifecycle
+component.json   ← structure, styling, signal declarations, functions, bindings
 ```
 
-The JSON file is fully serializable, statically analyzable, and visual-builder-friendly. The JS file is a standard ES module whose exports are declared in the JSON, making the connection between the two explicit and IDE-navigable.
+When handler functions grow complex, they may be extracted to an external `.js` sidecar referenced via `$src` on individual `$prototype: "Function"` entries. This is optional — simple components need no sidecar.
+
+The JSON file is fully serializable, statically analyzable, and visual-builder-friendly.
 
 ---
 
@@ -102,9 +102,8 @@ Every JSONsx document is a JSON object with the following top-level fields:
 
 ```json
 {
-  "$schema": "https://declarative-dom.org/schema/v1",
+  "$schema": "https://jsonsx.dev/schema/v1",
   "$id": "ComponentName",
-  "$handlers": "./component.js",
   "$defs": { },
   "tagName": "my-component",
   "children": [ ]
@@ -115,8 +114,7 @@ Every JSONsx document is a JSON object with the following top-level fields:
 |---|---|---|
 | `$schema` | Recommended | URI identifying the JSONsx dialect version |
 | `$id` | Recommended | Component identifier, used by tooling |
-| `$handlers` | Optional | Relative path or URL to companion `.js` file |
-| `$defs` | Optional | Signal and handler declarations for this component |
+| `$defs` | Optional | Signal, function, type, and data source declarations |
 | `tagName` | Required | HTML tag name for the root element |
 | `children` | Optional | Array of child element definitions, or Array namespace |
 
@@ -124,116 +122,386 @@ Every JSONsx document is a JSON object with the following top-level fields:
 
 JSONsx is a JSON Schema dialect. Documents may be validated against the JSONsx meta-schema using any JSON Schema 2020-12 compatible validator. The `$schema` URI identifies the dialect version and enables schema-aware tooling.
 
-JSONsx extends the base JSON Schema vocabulary with the following reserved keywords: `$handlers`, `$prototype`, `$handler`, `$compute`, `$deps`, `$props`, `$switch`, `$map`, `$src`, `$export`, `signal`, `timing`.
+JSONsx extends the base JSON Schema vocabulary with the following reserved keywords: `$prototype`, `$props`, `$switch`, `$map`, `$src`, `$export`, `signal`, `timing`, `default`, `body`, `arguments`, `name`.
+
+Standard JSON Schema 2020-12 keywords (`type`, `properties`, `items`, `enum`, `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `required`, `description`, `examples`, etc.) are inherited from the JSON Schema vocabulary and are valid on any `$defs` entry that is a signal or type definition.
 
 ---
 
-## 4. The Component Pair Model
+## 4. The Component Model
 
-### 4.1 File Pairing
+### 4.1 Self-Describing Components
 
-Every JSONsx component consists of two files with the same stem:
-
-```
-components/
-  my-counter.json    ← declaration
-  my-counter.js      ← implementation
-```
-
-The connection is declared explicitly in the JSON via `$handlers`:
+A JSONsx component is a single `.json` file. All state, computed values, and functions are declared in `$defs`. Simple components are fully self-describing — no sidecar file required:
 
 ```json
 {
-  "$handlers": "./my-counter.js"
+  "$id": "Counter",
+  "$defs": {
+    "$count": 0,
+    "increment": { "$prototype": "Function", "body": "this.$count.set(this.$count.get() + 1)" }
+  },
+  "tagName": "my-counter",
+  "children": [
+    { "tagName": "span", "textContent": "${this.$count.get()}" },
+    { "tagName": "button", "textContent": "+", "onclick": { "$ref": "#/$defs/increment" } }
+  ]
 }
 ```
 
-This string is a standard ES module specifier. IDEs follow it natively (CTRL-click). Bundlers follow it as a static import path. No custom tooling or plugins required for basic navigation.
+### 4.2 External Function Sidecar
 
-### 4.2 Handler Declaration
-
-Handlers that exist in the `.js` file must be declared in the JSON `$defs`. This declaration serves as the interface contract between the two files:
+When handler functions grow complex, they may be extracted to a `.js` sidecar file. Each function entry declares its own `$src`:
 
 ```json
 {
   "$defs": {
-    "increment": { "$handler": true },
-    "decrement": { "$handler": true },
-    "onMount":   { "$handler": true, "description": "Fires when element connects" }
+    "increment": { "$prototype": "Function", "$src": "./counter.js" },
+    "decrement": { "$prototype": "Function", "$src": "./counter.js" }
   }
 }
 ```
 
-The companion `.js` file exports a default object whose keys match these declarations:
+The `.js` file exports each function as a named export:
 
 ```js
-export default {
-  increment() { this.$count.set(this.$count.get() + 1); },
-  decrement() { this.$count.set(this.$count.get() - 1); },
-  onMount()   { console.log('mounted'); }
-};
+export function increment() { this.$count.set(this.$count.get() + 1); }
+export function decrement() { this.$count.set(Math.max(0, this.$count.get() - 1)); }
 ```
 
-**Compile-time contract:** The compiler validates that every `$handler: true` declaration in the JSON has a corresponding export in the `.js` file, and warns on undeclared exports.
+When multiple Function entries share a `$src`, the runtime imports the module once and extracts named exports. Module caching is automatic.
 
 ### 4.3 Handler Binding
 
-At runtime, handler exports are bound to the component scope. Inside a handler, `this` refers to the component scope object — providing access to all declared signals via `this.$signalName.get()` and `this.$signalName.set(value)`.
+At runtime, function exports are bound to the component scope. Inside a handler, `this` refers to the component scope object — providing access to all declared signals via `this.$signalName.get()` and `this.$signalName.set(value)`.
 
 ---
 
-## 5. Signal Declarations
+## 5. The `$defs` Grammar
 
-### 5.1 Signal Definition
+Every entry in `$defs` falls into exactly one of five shapes, determinable by inspection alone.
 
-Reactive signals are declared in `$defs` with `"signal": true`:
+### 5.1 Shape 1 — Naked Value Signal
+
+**Identified by:** a JSON scalar (number, string without `${}`, boolean, null), array, or plain object with no JSONsx reserved keys.
 
 ```json
 {
   "$defs": {
-    "$count":   { "type": "integer", "default": 0,       "signal": true },
-    "$name":    { "type": "string",  "default": "World", "signal": true },
-    "$visible": { "type": "boolean", "default": true,    "signal": true }
+    "$count":   0,
+    "$price":   9.99,
+    "$name":    "World",
+    "$active":  false,
+    "$data":    null,
+    "$tags":    [],
+    "$user":    { "id": null, "name": "", "role": "guest" }
   }
 }
 ```
 
-The `type` field follows JSON Schema type vocabulary and is used for validation and IDE autocomplete. The `default` field provides the initial signal value.
+**Emitted as:** `Signal.State(value)`
 
-### 5.2 Signal Types
+**Type inference:** The compiler infers the JSON Schema type from the value:
 
-JSONsx maps signal definitions to TC39 Signal types:
+| JSON value | Inferred type |
+|---|---|
+| `0`, `1`, `3.14` | `number` |
+| `"hello"` | `string` |
+| `true` / `false` | `boolean` |
+| `null` | `null` |
+| `[]` | `array` |
+| `{}` | `object` |
 
-| Definition shape | Signal type | Notes |
+**Rules:**
+- A plain string without `${}` is a string state signal initialized to that string value
+- A plain object with no `$prototype`, no `type`, no `default`, and no `properties` is an object state signal
+- `signal: true` must not be declared — it is implied. Doing so is a compile error.
+
+### 5.2 Shape 2 — Expanded Signal (JSON Schema)
+
+**Identified by:** an object with a `default` property and no `$prototype`.
+
+```json
+{
+  "$defs": {
+    "$count": {
+      "type": "integer",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Current counter value"
+    },
+    "$status": {
+      "type": "string",
+      "default": "idle",
+      "enum": ["idle", "loading", "success", "error"]
+    }
+  }
+}
+```
+
+**Emitted as:** `Signal.State(default)`
+
+**Rules:**
+- The `default` keyword is the required discriminator — its value is the signal's initial state
+- All JSON Schema 2020-12 keywords are valid: `type`, `properties`, `items`, `enum`, `minimum`, `maximum`, etc.
+- Schema keywords are tooling-only — they power LSP validation and TypeScript declaration generation. Stripped before runtime emission.
+- `signal: true` must not be declared — it is implied by `default`. Doing so is a compile error.
+
+**Use the expanded form when** the value needs type constraints, documentation, or references a shared type via `$ref`. **Use the naked form (Shape 1) when none apply.**
+
+### 5.3 Shape 2b — Pure Type Definition
+
+**Identified by:** an object with JSON Schema keywords (`type`, `properties`, `items`, etc.) but **no** `default` and **no** `$prototype`.
+
+```json
+{
+  "$defs": {
+    "TodoItem": {
+      "type": "object",
+      "properties": {
+        "id":   { "type": "integer" },
+        "text": { "type": "string" },
+        "done": { "type": "boolean" }
+      },
+      "required": ["id", "text", "done"]
+    }
+  }
+}
+```
+
+**Emitted as:** nothing — no signal, no function, no runtime artifact.
+
+Pure type definitions exist solely for tooling. They are reusable subschemas referenced by other `$defs` entries via `$ref`. **Naming convention:** `PascalCase` without a `$` prefix.
+
+### 5.4 Shape 3 — Computed Signal (Template String)
+
+**Identified by:** a JSON string value containing `${}` syntax.
+
+```json
+{
+  "$defs": {
+    "$fullName":     "${this.$firstName.get()} ${this.$lastName.get()}",
+    "$displayTitle": "${this.$score.get() >= 90 ? 'Expert' : 'Beginner'}",
+    "$scoreLabel":   "${this.$score.get()}%",
+    "$isEmpty":      "${this.$items.get().length === 0}"
+  }
+}
+```
+
+**Emitted as:** `Signal.Computed(() => \`...template...\`)`
+
+**Rules:**
+- `signal: true` is implied — must not be declared
+- `$deps` is never declared — the compiler scans `this.$identifier` references automatically
+- The string must be a pure expression — no statements, no assignments, no semicolons
+- `return` is never written — the expression value is the signal value
+- `this` refers exclusively to the current component's `$defs` scope
+
+### 5.5 Shape 4 — Function (Inline or External)
+
+**Identified by:** object with `$prototype: "Function"`.
+
+Functions serve two roles:
+- **Handler** — void function called in response to events
+- **Computed with logic** — function returning a value, wrapped in `Signal.Computed` when `signal: true`
+
+#### 5.5a — Inline handler
+
+```json
+"increment": {
+  "$prototype": "Function",
+  "body": "this.$count.set(this.$count.get() + 1)"
+},
+"handleInput": {
+  "$prototype": "Function",
+  "arguments": ["event"],
+  "body": "this.$value.set(event.target.value)"
+}
+```
+
+#### 5.5b — Inline computed function
+
+```json
+"$titleClass": {
+  "$prototype": "Function",
+  "body": "return this.$score.get() >= 90 ? 'gold' : 'silver'",
+  "signal": true
+}
+```
+
+`signal: true` here wraps the function in `Signal.Computed`. Required when the function should produce a reactive derived value.
+
+#### 5.5c — External function
+
+```json
+"addItem": {
+  "$prototype": "Function",
+  "$src": "./handlers/items.js"
+},
+"validateEmail": {
+  "$prototype": "Function",
+  "$src": "npm:@myorg/validators",
+  "$export": "validateEmail"
+}
+```
+
+#### 5.5d — Properties
+
+| Property | Required | Description |
 |---|---|---|
-| Literal `default` value | `Signal.State` | Mutable, set via `.set()` |
-| `$compute` expression | `Signal.Computed` | Read-only, recomputes on dep change |
-| `$handler: true` | Function (not a signal) | Bound to scope, callable directly |
+| `$prototype` | Yes | Must be `"Function"` |
+| `body` | If no `$src` | Raw function body string |
+| `arguments` | No | Array of parameter name strings. Default: `[]` |
+| `name` | No | Explicit function name. Default: the `$defs` key name |
+| `$src` | If no `body` | External module specifier |
+| `$export` | No | Named export in `$src` module. Default: `$defs` key name |
+| `signal` | No | When `true`, wraps in `Signal.Computed`. Default: `false` |
+| `description` | No | Documentation string |
 
-### 5.3 Signal Naming Convention
+`body` and `$src` are mutually exclusive. Declaring both is a compile-time error.
 
-Signal names use the `$` prefix by convention, matching the JSON Schema system keyword convention and providing visual distinction from static properties. Non-`$` names in `$defs` are handler declarations.
+### 5.6 Shape 5 — External Class (Data Source)
 
-### 5.4 Signal Access in JavaScript
+**Identified by:** object with `$prototype` set to any value **other than** `"Function"`.
 
-Within `.js` handler files, signals require explicit `.get()` and `.set()` calls:
+```json
+{
+  "$defs": {
+    "$userData": {
+      "$prototype": "Request",
+      "url": "/api/user",
+      "signal": true
+    },
+    "$posts": {
+      "$prototype": "MarkdownCollection",
+      "$src": "@jsonsx/md",
+      "src": "./content/posts/*.md",
+      "signal": true
+    }
+  }
+}
+```
+
+`signal: true` on external class entries is meaningful — when present, the resolved value is wrapped in a reactive signal. This is one of two remaining places where `signal: true` is an active flag (the other being Shape 4 computed functions).
+
+### 5.7 `signal: true` Semantics
+
+| Shape | `signal: true` | Behaviour |
+|---|---|---|
+| Naked value | Forbidden — compile error | Implied |
+| Expanded JSON Schema with `default` | Forbidden — compile error | Implied |
+| Template string | Forbidden — compile error | Implied |
+| `$prototype: "Function"` (handler) | Forbidden — compile error | Not applicable |
+| `$prototype: "Function"` (computed) | **Required to opt in** | Wraps in `Signal.Computed` |
+| `$prototype: "ClassName"` | **Optional** | Wraps resolved value in `Signal.State` |
+
+### 5.8 Signal Naming Convention
+
+Signal names use the `$` prefix by convention, providing visual distinction from function and type declarations. Non-`$` names in `$defs` are typically handler functions or type definitions.
+
+### 5.9 Signal Access in JavaScript
+
+Within function `body` strings and external `.js` files, signals require explicit `.get()` and `.set()` calls:
 
 ```js
-// Reading
 const current = this.$count.get();
-
-// Writing
 this.$count.set(current + 1);
+```
 
-// Computed signals are read-only
-const label = this.$displayText.get();
+### 5.10 Shape Detection Algorithm
+
+```
+For each entry in $defs:
+
+1. Value is a string?
+   a. Contains "${" → Shape 3: Computed signal (Signal.Computed)
+   b. No "${" → Shape 1: String state signal (Signal.State)
+
+2. Value is a number, boolean, or null?
+   → Shape 1: Naked state signal (Signal.State)
+
+3. Value is an array?
+   → Shape 1: Array state signal (Signal.State)
+
+4. Value is an object?
+   a. Has "$prototype: Function" → Shape 4: Function
+   b. Has "$prototype: <other>" → Shape 5: External class
+   c. Has "default" (no $prototype) → Shape 2: Expanded signal (Signal.State)
+   d. Has JSON Schema keywords, no "default", no "$prototype"
+      → Shape 2b: Pure type definition (tooling only, no emission)
+   e. No reserved keys → Shape 1: Object state signal (Signal.State)
 ```
 
 ---
 
-## 6. Reference System
+## 6. Universal Reactivity
 
-### 6.1 `$ref` Syntax
+Template literal syntax `${}` is valid **anywhere a string value appears in the document tree** — not only in `$defs`.
+
+### 6.1 Reactive element properties
+
+```json
+{
+  "tagName": "div",
+  "textContent": "${this.$count.get()} items remaining",
+  "className":   "${this.$active.get() ? 'card active' : 'card'}",
+  "hidden":      "${this.$items.get().length === 0}"
+}
+```
+
+### 6.2 Reactive style properties
+
+```json
+{
+  "tagName": "div",
+  "style": {
+    "color":   "${this.$score.get() > 90 ? 'gold' : 'inherit'}",
+    "opacity": "${this.$loading.get() ? '0.5' : '1'}"
+  }
+}
+```
+
+### 6.3 Reactive attributes
+
+```json
+{
+  "tagName": "button",
+  "attributes": {
+    "aria-label": "${this.$count.get()} unread messages",
+    "data-state": "${this.$status.get()}"
+  }
+}
+```
+
+### 6.4 Compilation
+
+When the compiler encounters `${}` in any string-valued property, it wraps the binding in a reactive effect:
+
+```js
+effect(() => {
+  el.textContent = `${scope.$count.get()} items remaining`;
+});
+```
+
+### 6.5 Relationship to `$ref`
+
+| Pattern | Use when |
+|---|---|
+| `{ "$ref": "#/$defs/$label" }` | Binding to a named signal — referenced in multiple places |
+| `"${this.$count.get()} items"` | Inline computed binding used in exactly one place |
+
+Prefer `${}` for single-use reactive bindings. Prefer `$ref` for reused or named signals.
+
+### 6.6 Scope
+
+Template strings anywhere in a component's document tree have access only to that component's `$defs` signals via `this.$signalName`. The `this` scope is always the current component's `$defs` object.
+
+---
+
+## 7. Reference System
+
+### 7.1 `$ref` Syntax
 
 JSONsx uses `$ref` to express bindings between properties and declared signals, following the JSON Reference convention. A `$ref` value is a URI string:
 
@@ -241,7 +509,7 @@ JSONsx uses `$ref` to express bindings between properties and declared signals, 
 { "$ref": "#/$defs/$count" }
 ```
 
-### 6.2 Reference Schemes
+### 7.2 Reference Schemes
 
 | Scheme | Example | Resolves to |
 |---|---|---|
@@ -253,7 +521,7 @@ JSONsx uses `$ref` to express bindings between properties and declared signals, 
 | Map index | `"$map/index"` | Current index in an Array map iteration |
 | External file | `"./other.json"` | Another JSONsx component (fully dereferenced) |
 
-### 6.3 Reactive Bindings
+### 7.3 Reactive Bindings
 
 When a `$ref` resolves to a `Signal.State` or `Signal.Computed`, the binding is reactive — the DOM property updates automatically whenever the signal value changes:
 
@@ -266,7 +534,7 @@ When a `$ref` resolves to a `Signal.State` or `Signal.Computed`, the binding is 
 
 When a `$ref` resolves to a plain value (non-signal), it is resolved once at render time.
 
-### 6.4 `$ref` Resolution Order
+### 7.4 `$ref` Resolution Order
 
 The runtime resolves `$ref` values in the following order:
 
@@ -278,9 +546,9 @@ The runtime resolves `$ref` values in the following order:
 
 ---
 
-## 7. Element Definitions
+## 8. Element Definitions
 
-### 7.1 DOM Property Mapping
+### 8.1 DOM Property Mapping
 
 Any valid DOM element property may be set directly on an element definition object. Property names follow the DOM camelCase convention:
 
@@ -300,11 +568,11 @@ This is equivalent to:
 <div id="my-element" class="container active" tabindex="0">Hello World</div>
 ```
 
-### 7.2 Protected Properties
+### 8.2 Protected Properties
 
 `id` and `tagName` are protected — they may not be set via `$ref` bindings. This mirrors the DOM's own immutability constraints on these properties and prevents conflicts with element identity.
 
-### 7.3 Custom Attributes
+### 8.3 Custom Attributes
 
 Non-standard attributes are set via the `attributes` object, following the distinction the DOM makes between properties and attributes:
 
@@ -319,7 +587,7 @@ Non-standard attributes are set via the `attributes` object, following the disti
 }
 ```
 
-### 7.4 Child Arrays
+### 8.4 Child Arrays
 
 Children are expressed as a JSON array of element definition objects:
 
@@ -335,7 +603,7 @@ Children are expressed as a JSON array of element definition objects:
 
 Children may be nested to arbitrary depth. Each child follows the same element definition schema.
 
-### 7.5 Slot Support
+### 8.5 Slot Support
 
 Custom elements support the standard HTML `slot` mechanism:
 
@@ -363,9 +631,9 @@ Usage with slotted content:
 
 ---
 
-## 8. Styling
+## 9. Styling
 
-### 8.1 Inline Styles as Objects
+### 9.1 Inline Styles as Objects
 
 The `style` property accepts an object with camelCase CSS property names, following the CSSOM convention:
 
@@ -381,7 +649,7 @@ The `style` property accepts an object with camelCase CSS property names, follow
 }
 ```
 
-### 8.2 Nested CSS Selectors
+### 9.2 Nested CSS Selectors
 
 CSS nesting is supported via special keys within the `style` object. Keys beginning with `:`, `.`, or `&` are treated as nested selectors:
 
@@ -405,11 +673,11 @@ CSS nesting is supported via special keys within the `style` object. Keys beginn
 
 Inline properties are applied directly to the element. Nested rules are emitted as a scoped `<style>` block using a generated data attribute selector.
 
-### 8.3 Static Style Extraction
+### 9.3 Static Style Extraction
 
 The compiler extracts all static `style` definitions into a single `<style>` block in the document `<head>`, eliminating per-element style tags at build time.
 
-### 8.4 Named Media Breakpoints (`$media`)
+### 9.4 Named Media Breakpoints (`$media`)
 
 Named breakpoints may be declared at the root document level using `$media`, following the [CSS Media Queries Level 4 `@custom-media` convention](https://www.w3.org/TR/mediaqueries-5/#custom-mq). Names use the CSS custom property `--` prefix:
 
@@ -452,56 +720,6 @@ The runtime resolves `@--name` to its registered condition string at render time
 ```
 
 `$media` declarations propagate through the component scope, so all descendant elements of a component share its named breakpoints without re-declaring them. If a child component declares its own `$media`, its definitions take precedence for that subtree.
-
----
-
-## 9. Event Handlers
-
-### 9.1 Handler Binding Syntax
-
-Event handlers are bound using DOM event property names (`onclick`, `onchange`, etc.) with a `$ref` to a declared handler:
-
-```json
-{
-  "tagName": "button",
-  "textContent": "Increment",
-  "onclick": { "$ref": "#/$defs/increment" }
-}
-```
-
-The handler must be declared in `$defs` and implemented in the companion `.js` file.
-
-### 9.2 Handler Declaration
-
-```json
-{
-  "$defs": {
-    "increment": { "$handler": true }
-  }
-}
-```
-
-### 9.3 Handler Implementation
-
-```js
-export default {
-  increment() {
-    this.$count.set(this.$count.get() + 1);
-  }
-};
-```
-
-### 9.4 Handler Arguments
-
-Event handlers receive the native DOM event object as their first argument:
-
-```js
-export default {
-  handleInput(event) {
-    this.$value.set(event.target.value);
-  }
-};
-```
 
 ---
 
@@ -734,7 +952,7 @@ When `$prototype` is not in the built-in registry and `$src` is absent, the runt
 
 ## 13. Component Encapsulation
 
-### 12.1 External Component References
+### 13.1 External Component References
 
 Components are referenced via `$ref` pointing to an external `.json` file:
 
@@ -755,7 +973,7 @@ Components are referenced via `$ref` pointing to an external `.json` file:
 
 External `$ref` resolution is handled by `@apidevtools/json-schema-ref-parser`, which also supports URLs and custom URI scheme resolvers.
 
-### 12.2 Explicit Props
+### 13.2 Explicit Props
 
 Props are passed explicitly via the `$props` object on the reference site. This is the only mechanism for passing state across component boundaries:
 
@@ -775,20 +993,20 @@ The receiving component declares what it accepts in its own `$defs`:
 ```json
 {
   "$defs": {
-    "title":    { "type": "string",  "default": "" },
-    "$count":   { "type": "integer", "default": 0, "signal": true },
-    "onAction": { "$handler": true }
+    "title":    "",
+    "$count":   0,
+    "onAction": { "$prototype": "Function", "body": "" }
   }
 }
 ```
 
 **Compile-time validation:** The compiler verifies that every key in `$props` corresponds to a declared `$defs` entry in the referenced component, and that types are compatible.
 
-### 12.3 Scope Isolation
+### 13.3 Scope Isolation
 
 Signal scope is bounded at the component (custom element) level, following the same model as CSS Custom Properties. Signals declared in a component's `$defs` are available to all descendants within that component, but do not propagate into child custom elements. Child components must receive all external state via explicit `$props`.
 
-### 12.4 npm and Remote Components
+### 13.4 npm and Remote Components
 
 Components may be referenced via any URI supported by the ref-parser resolver:
 
@@ -804,53 +1022,7 @@ An `npm:` URI scheme resolver may be registered with the ref-parser to support n
 
 ---
 
-## 14. Computed Expressions
-
-### 13.1 JSONata Expressions
-
-Computed signals may use JSONata expressions for inline value derivation. JSONata is a JSON query and transformation language with JavaScript-like expression syntax:
-
-```json
-{
-  "$defs": {
-    "$count": { "type": "integer", "default": 0, "signal": true },
-    "$label": {
-      "$compute": "$count > 10 ? 'high' : 'low'",
-      "$deps":    ["#/$defs/$count"],
-      "signal": true
-    },
-    "$doubled": {
-      "$compute": "$count * 2",
-      "$deps":    ["#/$defs/$count"],
-      "signal": true
-    }
-  }
-}
-```
-
-### 13.2 `$deps` Declaration
-
-The `$deps` array explicitly declares which signals the computed expression depends on. Dependencies are `$ref` strings pointing to `$defs` entries:
-
-```json
-{
-  "$compute": "count($items[done = false])",
-  "$deps": ["#/$defs/$items"],
-  "signal": true
-}
-```
-
-Explicit `$deps` declarations make dependency graphs statically analyzable — the compiler can determine the full reactivity graph without evaluating any code.
-
-### 13.3 Scope of Use
-
-JSONata expressions are appropriate for value derivation: arithmetic, string operations, conditionals, and simple array operations. Complex logic (closures, async operations, multi-step transformations, side effects) belongs in the `.js` handler file.
-
-This boundary is not enforced at runtime but is a recommended practice and may be linted by the compiler.
-
----
-
-## 15. Dynamic Component Switching
+## 14. Dynamic Component Switching
 
 ### 14.1 `$switch` Syntax
 
@@ -878,7 +1050,7 @@ Because all cases are declared statically in the JSON, the compiler has full kno
 
 ---
 
-## 16. Scope Rules
+## 15. Scope Rules
 
 ### 15.1 Scope Levels
 
@@ -910,15 +1082,14 @@ When resolving a `$ref` at runtime, the following order applies:
 
 ---
 
-## 17. Compilation Model
+## 16. Compilation Model
 
 ### 16.1 Static Detection
 
 A node is considered static if it and all its descendants satisfy all of the following:
 
-- No `signal: true` in any `$defs` entry
-- No `$compute` expressions
-- No `$handler: true` declarations
+- No `$defs` entries that produce signals or functions
+- No `${}` template strings in any property value
 - No `$prototype` namespaces
 - No `$switch` nodes
 - No `$prototype: "Array"` children
@@ -931,9 +1102,12 @@ Static detection is performed by a single recursive tree walk — no code execut
 | Component surface | Compiler output |
 |---|---|
 | Fully static subtree | Plain HTML, zero JS |
-| Signals only (no handlers) | HTML + signal initialization inline script |
-| Signals + handlers | HTML + named handler exports from `$handlers` |
-| Server-timed `Request` | HTML with baked response data |
+| Naked value with `${}` references in document | HTML + effect only |
+| Template string signal | HTML + signal + effect |
+| `$prototype: "Function"` | HTML + function + handler wiring |
+| External class with `timing: "server"` | HTML with baked response data |
+| External class with `timing: "client"` | HTML + runtime hydration |
+| Pure type definition | No output |
 
 ### 16.3 Island Serialization
 
@@ -955,11 +1129,11 @@ All static `style` definitions are extracted from the component tree and emitted
 
 ### 16.5 Bundle Manifest
 
-Because all `$handlers` paths and `$ref` component references are explicit strings in the JSON, the compiler produces an exact bundle manifest with zero static analysis of JS required. The JSON is the manifest.
+Because all `$src` paths and `$ref` component references are explicit strings in the JSON, the compiler produces an exact bundle manifest with zero static analysis of JS required. The JSON is the manifest.
 
 ---
 
-## 18. Runtime Pipeline
+## 17. Runtime Pipeline
 
 The JSONsx runtime processes a document in four sequential steps:
 
@@ -976,13 +1150,21 @@ All `$ref` pointers — internal, external file, and URL — are resolved into a
 ### Step 2 — Build Scope
 
 ```
-injectSignals($defs) → scope{}
-loadHandlers($handlers) → merge into scope{}
+buildScope($defs) → scope{}
 ```
 
-Each `$defs` entry with `signal: true` is wrapped in a `Signal.State` or `Signal.Computed`. Each `$defs` entry with `$prototype` is resolved into the appropriate Web API wrapper signal. The `$handlers` module is dynamically imported and its exports are bound to the scope.
+Each `$defs` entry is processed according to the shape detection algorithm (§5.10):
 
-**Libraries:** `signal-polyfill`, `jsonata`
+- Naked values → `Signal.State(value)`
+- Expanded signals (has `default`) → `Signal.State(default)`, schema keywords stripped
+- Pure type definitions → no-op
+- Template strings (contains `${}`) → `Signal.Computed(() => template)`
+- `$prototype: "Function"` + `body` → named function, bound to scope
+- `$prototype: "Function"` + `$src` → dynamic import, named export, bound to scope
+- `$prototype: "Function"` + `signal: true` → `Signal.Computed` wrapping above
+- `$prototype: "ClassName"` → external class resolution
+
+**Library:** `signal-polyfill`
 
 ### Step 3 — Render
 
@@ -990,7 +1172,7 @@ Each `$defs` entry with `signal: true` is wrapped in a `Signal.State` or `Signal
 renderNode(def, scope) → HTMLElement
 ```
 
-The dereferenced document tree is walked recursively. Each node produces a DOM element. `$ref` bindings to signals are wired to reactive effects. Static values are set once. Event handlers are attached as event listeners.
+The dereferenced document tree is walked recursively. Each node produces a DOM element. `$ref` bindings to signals are wired to reactive effects. Template strings (`${}`) in any string property are wrapped in reactive effects. Static values are set once. Event handlers are attached as event listeners.
 
 **Library:** Effect scheduler (`effect.js` — ~20 lines, the only novel infrastructure code)
 
@@ -1000,7 +1182,7 @@ The rendered element tree is appended to the target container. For SSR/compilati
 
 ---
 
-## 19. Reserved Keywords
+## 18. Reserved Keywords
 
 The following keys have special meaning in JSONsx and may not be used as element property names:
 
@@ -1008,30 +1190,32 @@ The following keys have special meaning in JSONsx and may not be used as element
 |---|---|
 | `$schema` | Dialect identifier |
 | `$id` | Component identifier |
-| `$defs` | Signal and handler declarations |
-| `$handlers` | Path to companion `.js` file |
-| `$ref` | Reference pointer |
+| `$defs` | Signal, function, type, and data source declarations |
+| `$ref` | Reference pointer (JSON Pointer, RFC 6901) |
 | `$props` | Explicit prop passing at component boundary |
-| `$prototype` | Web API namespace identifier |
-| `$handler` | Marks a `$defs` entry as a handler declaration |
-| `$src` | Module specifier for external class resolution |
-| `$export` | Override export name for external class |
-| `$compute` | JSONata expression for computed signals |
-| `$deps` | Dependency list for computed signals |
+| `$prototype` | Constructor name — Web API class, `"Function"`, or external class |
+| `$src` | External module specifier for functions or classes |
+| `$export` | Named export within `$src` module |
 | `$switch` | Dynamic component switching |
-| `$map` | Iteration context namespace (read-only) |
+| `$map` | Iteration context namespace (read-only, inside Array children) |
 | `$media` | Named media breakpoint declarations (root-level) |
-| `signal` | Marks a `$defs` entry as reactive |
-| `timing` | Execution timing for `Request` prototype (`"server"` \| `"client"`) |
-| `default` | Initial value for a signal |
+| `signal` | Reactive wrapping: required on `$prototype: "Function"` computed and external class entries |
+| `timing` | Execution timing: `"server"` or `"client"` |
+| `default` | Initial value — discriminator for expanded signal shape (Shape 2) |
+| `body` | Inline function body |
+| `arguments` | Inline function parameter names |
+| `name` | Inline function explicit name |
+| `description` | Documentation string on any `$defs` entry |
+
+Standard JSON Schema 2020-12 keywords (`type`, `properties`, `items`, `enum`, `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `required`, `examples`, etc.) are inherited from the JSON Schema vocabulary and are valid on any `$defs` entry that is a signal or type definition.
 
 ---
 
-## 20. Standards Alignment
+## 19. Standards Alignment
 
 ### 19.1 JSON Schema 2020-12
 
-JSONsx documents are valid JSON. The `$schema`, `$defs`, `$ref`, `$id`, and `type` keywords follow JSON Schema 2020-12 semantics. JSONsx is defined as a JSON Schema dialect with additional vocabulary for reactivity and DOM binding.
+JSONsx documents are valid JSON. The `$schema`, `$defs`, `$ref`, `$id`, and `type` keywords follow JSON Schema 2020-12 semantics. JSONsx is defined as a JSON Schema dialect with additional vocabulary for reactivity and DOM binding. JSON Schema type vocabulary (`type`, `properties`, `items`, `enum`, `minimum`, `maximum`, etc.) is first-class on `$defs` entries for signal type annotation, LSP hints, and TypeScript declaration generation.
 
 ### 19.2 JSON Pointer (RFC 6901)
 
@@ -1055,11 +1239,7 @@ Style object property names follow the CSS Object Model camelCase convention (`b
 
 ### 19.6 ECMAScript Modules
 
-The `$handlers` field accepts any valid ES module specifier. The runtime loads handlers via the native dynamic `import()` API. No module bundler is required for development.
-
-### 19.7 JSONata
-
-Computed expressions use [JSONata](https://jsonata.org) — an open-source query and transformation language for JSON with an established JavaScript implementation (`jsonata` npm package).
+The `$src` field on `$prototype: "Function"` and external class entries accepts any valid ES module specifier. The runtime loads external code via the native dynamic `import()` API. No module bundler is required for development.
 
 ---
 
@@ -1069,36 +1249,68 @@ Computed expressions use [JSONata](https://jsonata.org) — an open-source query
 
 ```json
 {
-  "$schema": "https://declarative-dom.org/schema/v1",
+  "$schema": "https://jsonsx.dev/schema/v1",
   "$id": "TodoApp",
-  "$handlers": "./todo-app.js",
+
   "$defs": {
+    "TodoItem": {
+      "type": "object",
+      "properties": {
+        "id":   { "type": "integer" },
+        "text": { "type": "string" },
+        "done": { "type": "boolean" }
+      },
+      "required": ["id", "text", "done"]
+    },
+
     "$items": {
       "type": "array",
-      "default": [
-        { "id": 1, "text": "Learn JSONsx", "done": false }
-      ],
-      "signal": true
+      "default": [{ "id": 1, "text": "Learn JSONsx", "done": false }],
+      "items": { "$ref": "#/$defs/TodoItem" }
     },
-    "$remaining": {
-      "$compute": "count($items[done = false])",
-      "$deps": ["#/$defs/$items"],
-      "signal": true
+
+    "$remaining": "${this.$items.get().filter(i => !i.done).length}",
+    "$total":     "${this.$items.get().length}",
+    "$summary":   "${this.$remaining.get()} of ${this.$total.get()} remaining",
+
+    "addItem": {
+      "$prototype": "Function",
+      "body": "this.$items.set([...this.$items.get(), { id: Date.now(), text: 'New item', done: false }])"
     },
-    "addItem":    { "$handler": true },
-    "toggleItem": { "$handler": true }
+    "toggleItem": {
+      "$prototype": "Function",
+      "arguments": ["id"],
+      "body": "this.$items.set(this.$items.get().map(i => i.id === id ? { ...i, done: !i.done } : i))"
+    },
+    "clearDone": {
+      "$prototype": "Function",
+      "body": "this.$items.set(this.$items.get().filter(i => !i.done))"
+    }
   },
+
   "tagName": "todo-app",
   "style": { "fontFamily": "system-ui", "maxWidth": "480px", "margin": "2rem auto" },
+
   "children": [
     {
       "tagName": "h1",
-      "textContent": { "$ref": "#/$defs/$remaining" }
+      "textContent": "${this.$summary.get()}"
     },
     {
-      "tagName": "button",
-      "textContent": "Add item",
-      "onclick": { "$ref": "#/$defs/addItem" }
+      "tagName": "div",
+      "style": { "display": "flex", "gap": "0.5rem", "marginBottom": "1rem" },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "Add item",
+          "onclick": { "$ref": "#/$defs/addItem" }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Clear done",
+          "onclick": { "$ref": "#/$defs/clearDone" }
+        }
+      ]
     },
     {
       "tagName": "ul",
@@ -1107,34 +1319,17 @@ Computed expressions use [JSONata](https://jsonata.org) — an open-source query
         "items": { "$ref": "#/$defs/$items" },
         "map": {
           "tagName": "li",
-          "$item":        { "$ref": "$map/item" },
-          "$index":       { "$ref": "$map/index" },
-          "$toggleItem":  { "$ref": "#/$defs/toggleItem" }
+          "style": {
+            "textDecoration": "${$map.item.done ? 'line-through' : 'none'}",
+            "opacity":        "${$map.item.done ? '0.5' : '1'}"
+          },
+          "textContent": "${$map.item.text}",
+          "onclick": { "$ref": "#/$defs/toggleItem" }
         }
       }
     }
   ]
 }
-```
-
-### `todo-app.js`
-
-```js
-export default {
-  addItem() {
-    this.$items.set([
-      ...this.$items.get(),
-      { id: Date.now(), text: 'New item', done: false }
-    ]);
-  },
-  toggleItem(index) {
-    this.$items.set(
-      this.$items.get().map((item, i) =>
-        i === index ? { ...item, done: !item.done } : item
-      )
-    );
-  }
-};
 ```
 
 ### Usage
@@ -1152,25 +1347,32 @@ await JSONsx('./todo-app.json', document.body);
 |---|---|---|
 | `@apidevtools/json-schema-ref-parser` | `^15.0` | `$ref` resolution and external file dereferencing |
 | `signal-polyfill` | `^0.2` | TC39 Signals polyfill (`Signal.State`, `Signal.Computed`) |
-| `jsonata` | `^2.0` | JSONata expression evaluation for `$compute` |
 
 The JSONsx runtime introduces one file of novel infrastructure code: `effect.js` (~20 lines), which implements a microtask-batched effect scheduler on top of `Signal.subtle.Watcher`.
 
+The compiled output of a JSONsx component requires **only the signals polyfill**. All other processing occurs at build time.
+
 ---
 
-## Appendix C — File Pair Checklist
+## Appendix C — Component Checklist
 
 When creating a new JSONsx component:
 
 - [ ] `component.json` declares `$schema` and `$id`
-- [ ] `component.json` declares `$handlers` if any behavior is needed
-- [ ] All reactive state is declared in `$defs` with `signal: true`
-- [ ] All handler names used in `onclick` etc. are declared in `$defs` with `$handler: true`
-- [ ] `component.js` default export has a key for every `$handler: true` declaration
-- [ ] All `$compute` expressions declare their `$deps` explicitly
-- [ ] Cross-component state is passed via `$props`, not assumed from global scope
-- [ ] Server-timed `Request` prototypes use only statically resolvable URLs
+- [ ] Simple mutable state uses naked values — no `signal: true`, no wrapper object needed
+- [ ] State needing constraints or documentation uses expanded JSON Schema form with `default`
+- [ ] Shared type shapes use `PascalCase` pure type definitions (no `default`, no `$prototype`)
+- [ ] Derived values use template strings with `${}` — no `$compute`, no `$deps`
+- [ ] Template strings used directly in element properties for single-use reactive bindings
+- [ ] `$ref` used for signals referenced in multiple places or complex enough to deserve a name
+- [ ] All functions declared with `$prototype: "Function"` and either `body` or `$src`
+- [ ] Handler `body` strings do not include non-void `return`
+- [ ] Computed `body` strings (`signal: true`) include `return`
+- [ ] `signal: true` declared only on `$prototype: "Function"` computed entries and external class entries
+- [ ] External `$src` paths are valid module specifiers resolvable from the `.json` file location
+- [ ] Cross-component state is passed via `$props`, not assumed from the parent scope
+- [ ] Server-timed external class entries use only statically resolvable configuration
 
 ---
 
-*JSONsx Specification v0.9.0-draft — subject to revision*
+*JSONsx Specification v1.0.0-draft — subject to revision*

@@ -1,16 +1,19 @@
 {
   "$schema": "../../schema/schema.json",
   "$id": "RouterDemo",
-  "$handlers": "./router.js",
 
   "$defs": {
     "$currentRoute": {
       "type": "string",
       "default": "home",
-      "signal": true,
       "description": "Active route key. Drives the $switch below."
     },
-    "navigate": { "$handler": true, "description": "Set $currentRoute to the given route key" }
+    "navigate": {
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "const route = event.currentTarget?.dataset?.route ?? event.target?.dataset?.route; if (route) this.$currentRoute.set(route);",
+      "description": "Set $currentRoute to the given route key"
+    }
   },
 
   "tagName": "router-demo",

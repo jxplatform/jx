@@ -1,11 +1,11 @@
 /**
  * JSONsx — JSON-native reactive web component runtime
- * @version 0.1.0
+ * @version 1.0.0
  * @license MIT
  *
  * Four-step pipeline:
  *   1. resolve    — fetch JSON source (or accept raw object)
- *   2. buildScope — Signal.State / Signal.Computed / Web API namespaces + handlers
+ *   2. buildScope — five-shape $defs detection + signal/function creation
  *   3. render     — walk resolved tree, build DOM, wire reactive effects
  *   4. output     — append to target
  *
@@ -13,7 +13,6 @@
  */
 
 import { Signal } from 'signal-polyfill';
-import jsonata from 'jsonata';
 import { effect } from './effect.js';
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -59,29 +58,78 @@ export async function resolve(source) {
 // ─── Step 2: Build scope ──────────────────────────────────────────────────────
 
 /**
- * Build the reactive scope from $defs and $handlers.
+ * JSON Schema keywords used to identify pure type definitions (Shape 2b).
+ */
+const SCHEMA_KEYWORDS = new Set([
+  'type', 'properties', 'items', 'enum', 'minimum', 'maximum',
+  'minLength', 'maxLength', 'pattern', 'required', 'examples',
+]);
+
+/**
+ * Build the reactive scope from $defs using the five-shape detection algorithm.
  *
  * @param {object} doc
  * @param {object} [parentScope={}]
- * @param {string} [base=location.href]  Base URL for resolving $handlers import
+ * @param {string} [base=location.href]  Base URL for resolving $src imports
  * @returns {Promise<object>}
  */
 export async function buildScope(doc, parentScope = {}, base = location.href) {
   const scope = { ...parentScope };
 
   for (const [key, def] of Object.entries(doc.$defs ?? {})) {
-    if (def.$handler) continue;
 
-    if (def.signal) {
-      if (def.$compute) {
-        scope[key] = makeComputedSignal(def.$compute, def.$deps ?? [], scope);
-      } else if (def.$prototype) {
-        scope[key] = await resolvePrototype(def, scope, key, base);
+    // 1. String value
+    if (typeof def === 'string') {
+      if (def.includes('${')) {
+        // Shape 3: Computed signal (template string)
+        scope[key] = makeTemplateComputed(def, scope);
       } else {
-        scope[key] = new Signal.State(def.default ?? null);
+        // Shape 1: String state signal
+        scope[key] = new Signal.State(def);
       }
-    } else if (def.$prototype) {
-      scope[key] = await resolvePrototype(def, scope, key, base);
+      continue;
+    }
+
+    // 2. Number, boolean, or null
+    if (typeof def === 'number' || typeof def === 'boolean' || def === null) {
+      scope[key] = new Signal.State(def);
+      continue;
+    }
+
+    // 3. Array
+    if (Array.isArray(def)) {
+      scope[key] = new Signal.State(def);
+      continue;
+    }
+
+    // 4. Object
+    if (typeof def === 'object') {
+      // 4a. $prototype: "Function" → Shape 4
+      if (def.$prototype === 'Function') {
+        scope[key] = await resolveFunction(def, scope, key, base);
+        continue;
+      }
+
+      // 4b. $prototype: <other> → Shape 5: External class / Web API namespace
+      if (def.$prototype) {
+        scope[key] = await resolvePrototype(def, scope, key, base);
+        continue;
+      }
+
+      // 4c. Has "default" → Shape 2: Expanded signal
+      if ('default' in def) {
+        scope[key] = new Signal.State(def.default);
+        continue;
+      }
+
+      // 4d. Has JSON Schema keywords but no default, no $prototype → Shape 2b: pure type def
+      if (hasSchemaKeywords(def)) {
+        continue; // no-op: tooling only
+      }
+
+      // 4e. Plain object → Shape 1: Object state signal
+      scope[key] = new Signal.State(def);
+      continue;
     }
   }
 
@@ -89,43 +137,92 @@ export async function buildScope(doc, parentScope = {}, base = location.href) {
     scope['$media'] = doc.$media;
   }
 
-  if (doc.$handlers) {
-    const handlersUrl = new URL(doc.$handlers, base).href;
-    const mod = await import(handlersUrl);
-    for (const [key, fn] of Object.entries(mod.default ?? mod)) {
-      scope[key] = fn;
-    }
-  }
-
   return scope;
 }
 
 /**
- * Bridge async JSONata evaluation into a Signal.State.
- * The effect re-runs whenever any listed dep signal changes, then pushes
- * the new value into the state asynchronously.
- *
- * @param {string}   expression - JSONata expression string
- * @param {string[]} depKeys    - Array of "#/$defs/$key" dep references
- * @param {object}   scope
- * @returns {Signal.State}
+ * Check whether an object contains any JSON Schema keywords.
+ * Used to discriminate Shape 2b (pure type definition) from Shape 1 (naked object).
  */
-function makeComputedSignal(expression, depKeys, scope) {
-  const expr  = jsonata(expression);
-  const state = new Signal.State(null);
+function hasSchemaKeywords(obj) {
+  for (const k of Object.keys(obj)) {
+    if (SCHEMA_KEYWORDS.has(k)) return true;
+  }
+  return false;
+}
+export { hasSchemaKeywords };
 
-  effect(() => {
-    const bindings = {};
-    for (const ref of depKeys) {
-      const key  = ref.split('/').pop();                       // e.g. '$name'
-      const sig  = scope[key];
-      const bKey = key.startsWith('$') ? key.slice(1) : key;  // JSONata bindings omit the $
-      bindings[bKey] = isSignal(sig) ? sig.get() : sig;
+/**
+ * Create a Signal.Computed from a template string containing ${}.
+ * The template is evaluated as a JS template literal with `this` mapped to scope.
+ */
+function makeTemplateComputed(template, scope) {
+  const fn = new Function('scope', `with(scope){return \`${template}\`}`);
+  return new Signal.Computed(() => fn(scope));
+}
+
+// ─── Step 2b: Function resolution (Shape 4) ─────────────────────────────────
+
+/**
+ * Module cache for $src imports (shared with external class resolution).
+ */
+const _moduleCache = new Map();
+
+/**
+ * Resolve a $prototype: "Function" entry into a bound function or Signal.Computed.
+ *
+ * @param {object} def   - $defs entry with $prototype: "Function"
+ * @param {object} scope
+ * @param {string} key   - def key name
+ * @param {string} [base] - Base URL for resolving $src imports
+ * @returns {Promise<Function|Signal.Computed>}
+ */
+async function resolveFunction(def, scope, key, base) {
+  if (def.body && def.$src) {
+    throw new Error(`JSONsx: '${key}' declares both body and $src — these are mutually exclusive`);
+  }
+  if (!def.body && !def.$src) {
+    throw new Error(`JSONsx: '${key}' is a Function prototype with no body or $src`);
+  }
+
+  let fn;
+
+  if (def.body) {
+    const args = def.arguments ?? [];
+    fn = new Function(...args, def.body);
+    Object.defineProperty(fn, 'name', { value: def.name ?? key, configurable: true });
+  } else {
+    // $src: dynamic import
+    const src = def.$src;
+    const exportName = def.$export ?? key;
+    let mod;
+    if (_moduleCache.has(src)) {
+      mod = _moduleCache.get(src);
+    } else {
+      try {
+        mod = await import(src);
+      } catch {
+        if (base) {
+          const resolvedSrc = new URL(src, base).href;
+          mod = await import(resolvedSrc);
+        } else {
+          throw new Error(`JSONsx: failed to import '$src' "${src}" for "${key}"`);
+        }
+      }
+      _moduleCache.set(src, mod);
     }
-    expr.evaluate(undefined, bindings).then(v => state.set(v ?? null)).catch(() => {});
-  });
+    fn = mod[exportName] ?? mod.default?.[exportName];
+    if (typeof fn !== 'function') {
+      throw new Error(`JSONsx: export "${exportName}" not found or not a function in "${src}"`);
+    }
+  }
 
-  return state;
+  // signal: true → wrap in Signal.Computed
+  if (def.signal) {
+    return new Signal.Computed(fn.bind(scope));
+  }
+
+  return fn.bind(scope);
 }
 
 // ─── Step 3: Render ───────────────────────────────────────────────────────────
@@ -135,10 +232,11 @@ function makeComputedSignal(expression, depKeys, scope) {
  * @type {Set<string>}
  */
 export const RESERVED_KEYS = new Set([
-  '$schema', '$id', '$defs', '$handlers', '$ref', '$props',
-  '$switch', '$prototype', '$handler', '$compute', '$deps',
-  '$media', '$src', '$export',
+  '$schema', '$id', '$defs', '$ref', '$props',
+  '$switch', '$prototype', '$src', '$export',
+  '$media', '$map',
   'signal', 'timing', 'default', 'description',
+  'body', 'arguments', 'name',
   'tagName', 'children', 'style', 'attributes',
   'items', 'map', 'filter', 'sort', 'cases',
 ]);
@@ -152,7 +250,6 @@ export const RESERVED_KEYS = new Set([
  */
 export function renderNode(def, scope) {
   // Extend scope with any $-prefixed local bindings declared on this node
-  // (e.g. "$todoIndex": { "$ref": "$map/index" } in a map template)
   let localScope = scope;
   for (const [key, val] of Object.entries(def)) {
     if (key.startsWith('$') && !RESERVED_KEYS.has(key)) {
@@ -171,7 +268,7 @@ export function renderNode(def, scope) {
   const el = document.createElement(def.tagName ?? 'div');
 
   applyProperties(el, def, localScope);
-  applyStyle(el, def.style ?? {}, localScope['$media'] ?? {});
+  applyStyle(el, def.style ?? {}, localScope['$media'] ?? {}, localScope);
   applyAttributes(el, def.attributes ?? {}, localScope);
 
   for (const child of (Array.isArray(def.children) ? def.children : [])) {
@@ -179,6 +276,24 @@ export function renderNode(def, scope) {
   }
 
   return el;
+}
+
+// ─── Template string utilities ────────────────────────────────────────────────
+
+/**
+ * Check if a value is a template string (contains ${}).
+ */
+function isTemplateString(val) {
+  return typeof val === 'string' && val.includes('${');
+}
+
+/**
+ * Evaluate a template string in the context of a scope.
+ * Template strings use `this.$name` syntax which maps to `scope.$name`.
+ */
+function evaluateTemplate(str, scope) {
+  const fn = new Function('scope', `with(scope){return \`${str}\`}`);
+  return fn(scope);
 }
 
 // ─── Property / style / attribute application ─────────────────────────────────
@@ -209,6 +324,13 @@ function bindProperty(el, key, val, scope) {
     }
     return;
   }
+
+  // Universal ${} reactivity — template strings in element properties
+  if (isTemplateString(val)) {
+    effect(() => { el[key] = evaluateTemplate(val, scope); });
+    return;
+  }
+
   el[key] = val;
 }
 
@@ -216,21 +338,19 @@ function bindProperty(el, key, val, scope) {
  * Apply inline styles and emit a scoped <style> block for nested CSS selectors
  * and @custom-media breakpoint rules.
  *
- * Media keys follow CSS Media Queries Level 4 @custom-media convention:
- *   "@--md"                  → resolves name "--md" from mediaQueries dict
- *   "@(min-width: 768px)"    → literal media condition (strip leading "@")
- *
  * @param {HTMLElement} el
  * @param {object}      styleDef
  * @param {object}      [mediaQueries={}]  Named breakpoints from root $media
+ * @param {object}      [scope={}]         Component scope for template string evaluation
  */
-export function applyStyle(el, styleDef, mediaQueries = {}) {
+export function applyStyle(el, styleDef, mediaQueries = {}, scope = {}) {
   const nested = {};
   const media  = {};
 
   for (const [prop, val] of Object.entries(styleDef)) {
-    if (prop.startsWith('@'))    media[prop]  = val;
-    else if (isNestedSelector(prop)) nested[prop] = val;
+    if (prop.startsWith('@'))            media[prop]  = val;
+    else if (isNestedSelector(prop))     nested[prop] = val;
+    else if (isTemplateString(val))      effect(() => { el.style[prop] = evaluateTemplate(val, scope); });
     else el.style[prop] = val;
   }
 
@@ -253,7 +373,6 @@ export function applyStyle(el, styleDef, mediaQueries = {}) {
   }
 
   for (const [key, rules] of Object.entries(media)) {
-    // "@--md" → look up "--md" in mediaQueries; "@(min-width: 768px)" → use as-is
     const query = key.startsWith('@--')
       ? (mediaQueries[key.slice(1)] ?? key.slice(1))
       : key.slice(1);
@@ -271,6 +390,8 @@ function applyAttributes(el, attrs, scope) {
       const resolved = resolveRef(v.$ref, scope);
       if (isSignal(resolved)) effect(() => el.setAttribute(k, String(resolved.get())));
       else el.setAttribute(k, String(resolved ?? ''));
+    } else if (isTemplateString(v)) {
+      effect(() => el.setAttribute(k, String(evaluateTemplate(v, scope))));
     } else {
       el.setAttribute(k, String(v));
     }
@@ -298,7 +419,7 @@ function renderMappedArray(def, scope) {
   const render = () => {
     container.innerHTML = '';
     getItems().forEach((item, index) => {
-      const child = { ...scope, '$map/item': item, '$map/index': index };
+      const child = { ...scope, '$map/item': item, '$map/index': index, '$map': { item, index } };
       container.appendChild(renderNode(mapDef, child));
     });
   };
@@ -329,7 +450,7 @@ function renderSwitch(def, scope) {
   return container;
 }
 
-// ─── Prototype namespaces ─────────────────────────────────────────────────────
+// ─── Prototype namespaces (Shape 5) ──────────────────────────────────────────
 
 /**
  * Resolve a $prototype definition into a reactive signal wrapping a Web API
@@ -458,32 +579,23 @@ export async function resolvePrototype(def, scope, key, base) {
   }
 }
 
-// ─── Module cache for $src imports ────────────────────────────────────────────
-
-const _moduleCache = new Map();
+// ─── External class resolution ────────────────────────────────────────────────
 
 /**
  * Reserved keys stripped from the config object passed to external class constructors.
  */
 const EXTERNAL_RESERVED = new Set([
   '$prototype', '$src', '$export', 'signal', 'timing',
-  '$compute', '$deps', 'default', 'description',
+  'default', 'description', 'body', 'arguments', 'name',
 ]);
 
 /**
  * Resolve an external class prototype via $src.
- *
- * @param {object} def   - $defs entry with $prototype and $src
- * @param {object} scope
- * @param {string} key   - def key (for diagnostics)
- * @param {string} [base] - Base URL for resolving relative $src paths
- * @returns {Promise<Signal.State>}
  */
 async function resolveExternalPrototype(def, scope, key, base) {
   const src = def.$src;
   const exportName = def.$export ?? def.$prototype;
 
-  // 1. Import module (with cache)
   let mod;
   if (_moduleCache.has(src)) {
     mod = _moduleCache.get(src);
@@ -491,7 +603,6 @@ async function resolveExternalPrototype(def, scope, key, base) {
     try {
       mod = await import(src);
     } catch {
-      // Try resolving relative to base
       if (base) {
         const resolvedSrc = new URL(src, base).href;
         mod = await import(resolvedSrc);
@@ -502,7 +613,6 @@ async function resolveExternalPrototype(def, scope, key, base) {
     _moduleCache.set(src, mod);
   }
 
-  // 2. Extract export
   const ExportedClass = mod[exportName] ?? mod.default?.[exportName];
   if (!ExportedClass) {
     throw new Error(`JSONsx: export "${exportName}" not found in "${src}"`);
@@ -511,16 +621,13 @@ async function resolveExternalPrototype(def, scope, key, base) {
     throw new Error(`JSONsx: "${exportName}" from "${src}" is not a class`);
   }
 
-  // 3. Build config (strip reserved keys)
   const config = {};
   for (const [k, v] of Object.entries(def)) {
     if (!EXTERNAL_RESERVED.has(k)) config[k] = v;
   }
 
-  // 4. Instantiate
   const instance = new ExportedClass(config);
 
-  // 5. Resolve value
   let value;
   if (typeof instance.resolve === 'function') {
     value = await instance.resolve();
@@ -530,10 +637,8 @@ async function resolveExternalPrototype(def, scope, key, base) {
     value = instance;
   }
 
-  // 6. Wrap in signal
   const state = new Signal.State(value);
 
-  // 7. Subscribe for reactivity if available
   if (typeof instance.subscribe === 'function') {
     instance.subscribe((newVal) => state.set(newVal));
   }
@@ -553,10 +658,8 @@ async function resolveExternalPrototype(def, scope, key, base) {
 export function resolveRef(ref, scope) {
   if (typeof ref !== 'string') return ref;
   if (ref.startsWith('$map/')) {
-    // '$map/item' or '$map/index' → direct scope lookup
-    // '$map/item/text' → scope['$map/item'].text
     const parts = ref.split('/');
-    const baseKey = parts[0] + '/' + parts[1];   // '$map/item' | '$map/index'
+    const baseKey = parts[0] + '/' + parts[1];
     const base = scope[baseKey];
     return parts.length > 2 ? getPath(base, parts.slice(2).join('/')) : base;
   }

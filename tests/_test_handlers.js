@@ -1,1 +1,2 @@
-export default { onMount() { globalThis._testMounted = true; } };
+// Named export for onMount test
+export function onMount() { globalThis._testMounted = true; }

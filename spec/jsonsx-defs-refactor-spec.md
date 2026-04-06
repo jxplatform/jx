@@ -838,7 +838,7 @@ When creating a new JSONsx component:
 
 ## 13. Codebase Refactoring Targets
 
-### `ddom.js` (runtime)
+### `jsonsx.js` (runtime)
 
 - **Remove:** `loadHandlers()` and all `$handlers` document-level processing
 - **Remove:** `makeComputed()` using JSONata
@@ -854,7 +854,7 @@ When creating a new JSONsx component:
   - `$prototype: "ClassName"` → existing external class path (unchanged)
 - **Update:** element tree rendering — detect `${}` in any string property; emit reactive effect instead of one-time assignment
 
-### `ddom-compiler.js` (compiler)
+### `compiler.js` (compiler)
 
 - **Remove:** JSONata import and evaluation
 - **Remove:** `$handlers` document-level processing
@@ -885,7 +885,7 @@ When creating a new JSONsx component:
 - Delete — all logic is inlined in the updated example
 - Replaced by the sidecar variant shown in §10 as the "external functions" reference
 
-### `ddom-spec.md` (root spec)
+### `jsonsx-spec.md` (root spec)
 
 | Section | Change |
 |---|---|

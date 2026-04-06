@@ -1,3 +1,8 @@
+/**
+ * index.js — external functions for the examples index page.
+ * Used via $src on $prototype: "Function" entries.
+ */
+
 const SOURCES = {
   counter:    './counter/counter.json',
   computed:   './computed/user-card.json',
@@ -20,16 +25,14 @@ async function loadSource(id, signal) {
   }
 }
 
-export default {
-  async selectTab(event) {
-    const id = event.currentTarget.dataset.tab;
-    if (!id || !SOURCES[id]) return;
-    this.$activeTab.set(id);
-    this.$iframeSrc.set(`./${id}/index.html`);
-    await loadSource(id, this.$sourceText);
-  },
+export async function selectTab(event) {
+  const id = event.currentTarget.dataset.tab;
+  if (!id || !SOURCES[id]) return;
+  this.$activeTab.set(id);
+  this.$iframeSrc.set(`./${id}/index.html`);
+  await loadSource(id, this.$sourceText);
+}
 
-  async onMount() {
-    await loadSource(this.$activeTab.get(), this.$sourceText);
-  },
-};
+export async function onMount() {
+  await loadSource(this.$activeTab.get(), this.$sourceText);
+}

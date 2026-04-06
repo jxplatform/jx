@@ -1,7 +1,6 @@
 {
   "$schema": "https://jsonsx.dev/schema/v1",
   "$id": "MarkdownBlog",
-  "$handlers": "./blog.js",
 
   "$defs": {
     "$posts": {
@@ -13,11 +12,7 @@
       "sortOrder": "desc",
       "signal": true
     },
-    "$currentSlug": {
-      "type": "string",
-      "default": "",
-      "signal": true
-    },
+    "$currentSlug": { "type": "string", "default": "" },
     "$currentPost": {
       "$prototype": "MarkdownFile",
       "$src": "../../parser/md/md.js",
@@ -26,7 +21,11 @@
       "directives": true,
       "signal": true
     },
-    "selectPost": { "$handler": true }
+    "selectPost": {
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "const slug = event.target.dataset?.slug; if (slug) this.$currentSlug.set(slug);"
+    }
   },
 
   "tagName": "markdown-blog",
@@ -107,18 +106,12 @@
                   "tagName": "time",
                   "textContent": { "$ref": "#/$defs/$currentPost/frontmatter/date" }
                 },
-                {
-                  "tagName": "span",
-                  "textContent": " · "
-                },
+                { "tagName": "span", "textContent": " · " },
                 {
                   "tagName": "span",
                   "textContent": { "$ref": "#/$defs/$currentPost/$readingTime" }
                 },
-                {
-                  "tagName": "span",
-                  "textContent": " min read"
-                }
+                { "tagName": "span", "textContent": " min read" }
               ]
             }
           ]

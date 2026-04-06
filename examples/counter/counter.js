@@ -1,32 +1,22 @@
 /**
- * counter.js — handlers for counter.json
+ * counter.js — external function examples for counter.json
+ *
+ * With the new $defs grammar, handlers are defined inline as
+ * $prototype: "Function" entries with `body`. This sidecar is
+ * kept as documentation of the external $src pattern.
  *
  * `this` is bound to the component scope.
- * Signals are accessed via .get() / .set() — explicit by design,
- * following the TC39 Signals proposal API.
+ * Signals are accessed via .get() / .set().
  */
 
-export default {
+export function increment() {
+  this.$count.set(this.$count.get() + 1);
+}
 
-  /**
-   * Increase the counter by 1.
-   */
-  increment() {
-    this.$count.set(this.$count.get() + 1);
-  },
+export function decrement() {
+  this.$count.set(Math.max(0, this.$count.get() - 1));
+}
 
-  /**
-   * Decrease the counter by 1 (minimum 0).
-   */
-  decrement() {
-    this.$count.set(Math.max(0, this.$count.get() - 1));
-  },
-
-  /**
-   * Reset the counter to zero.
-   */
-  reset() {
-    this.$count.set(0);
-  },
-
-};
+export function reset() {
+  this.$count.set(0);
+}

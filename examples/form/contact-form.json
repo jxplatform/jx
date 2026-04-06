@@ -1,76 +1,53 @@
 {
   "$schema": "../../schema/schema.json",
   "$id": "ContactForm",
-  "$handlers": "./contact-form.js",
   "$defs": {
-    "$name": {
-      "type": "string",
-      "default": "",
-      "signal": true
-    },
-    "$email": {
-      "type": "string",
-      "default": "",
-      "signal": true
-    },
-    "$message": {
-      "type": "string",
-      "default": "",
-      "signal": true
-    },
-    "$submitted": {
-      "type": "boolean",
-      "default": false,
-      "signal": true
-    },
+    "$name": { "type": "string", "default": "" },
+    "$email": { "type": "string", "default": "" },
+    "$message": { "type": "string", "default": "" },
+    "$submitted": { "type": "boolean", "default": false },
     "$nameValid": {
-      "$compute": "$length($trim($name)) >= 2",
-      "$deps": [
-        "#/$defs/$name"
-      ],
-      "type": "boolean",
+      "$prototype": "Function",
+      "body": "return this.$name.get().trim().length >= 2;",
       "signal": true
     },
     "$emailValid": {
-      "$compute": "$contains($email, '@') and $contains($email, '.') and $length($email) > 5",
-      "$deps": [
-        "#/$defs/$email"
-      ],
-      "type": "boolean",
+      "$prototype": "Function",
+      "body": "const e = this.$email.get(); return e.includes('@') && e.includes('.') && e.length > 5;",
       "signal": true
     },
     "$messageValid": {
-      "$compute": "$length($trim($message)) >= 10",
-      "$deps": [
-        "#/$defs/$message"
-      ],
-      "type": "boolean",
+      "$prototype": "Function",
+      "body": "return this.$message.get().trim().length >= 10;",
       "signal": true
     },
     "$formValid": {
-      "$compute": "$nameValid and $emailValid and $messageValid",
-      "$deps": [
-        "#/$defs/$nameValid",
-        "#/$defs/$emailValid",
-        "#/$defs/$messageValid"
-      ],
-      "type": "boolean",
+      "$prototype": "Function",
+      "body": "return this.$nameValid.get() && this.$emailValid.get() && this.$messageValid.get();",
       "signal": true
     },
     "setName": {
-      "$handler": true
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "this.$name.set(event.target.value);"
     },
     "setEmail": {
-      "$handler": true
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "this.$email.set(event.target.value);"
     },
     "setMessage": {
-      "$handler": true
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "this.$message.set(event.target.value);"
     },
     "submit": {
-      "$handler": true
+      "$prototype": "Function",
+      "body": "if (!this.$formValid.get()) return; console.log('Form submitted:', { name: this.$name.get(), email: this.$email.get(), message: this.$message.get() }); this.$submitted.set(true); this.reset();"
     },
     "reset": {
-      "$handler": true
+      "$prototype": "Function",
+      "body": "this.$name.set(''); this.$email.set(''); this.$message.set(''); this.$submitted.set(false);"
     }
   },
   "tagName": "contact-form",
@@ -88,266 +65,144 @@
     {
       "tagName": "h2",
       "textContent": "Contact Us",
-      "style": {
-        "margin": "0 0 1.5em",
-        "color": "#333",
-        "fontSize": "1.5em"
-      }
+      "style": { "margin": "0 0 1.5em", "color": "#333", "fontSize": "1.5em" }
     },
     {
       "tagName": "div",
-      "style": {
-        "marginBottom": "1.25em"
-      },
+      "style": { "marginBottom": "1.25em" },
       "children": [
         {
           "tagName": "label",
           "textContent": "Name",
-          "style": {
-            "display": "block",
-            "fontWeight": "600",
-            "marginBottom": "0.35em",
-            "color": "#555",
-            "fontSize": "0.9em"
-          }
+          "style": { "display": "block", "fontWeight": "600", "marginBottom": "0.35em", "color": "#555", "fontSize": "0.9em" }
         },
         {
           "tagName": "input",
-          "value": {
-            "$ref": "#/$defs/$name"
-          },
-          "oninput": {
-            "$ref": "#/$defs/setName"
-          },
-          "attributes": {
-            "type": "text",
-            "placeholder": "Your full name"
-          },
+          "value": { "$ref": "#/$defs/$name" },
+          "oninput": { "$ref": "#/$defs/setName" },
+          "attributes": { "type": "text", "placeholder": "Your full name" },
           "style": {
-            "width": "100%",
-            "boxSizing": "border-box",
-            "padding": "0.6em 0.75em",
-            "fontSize": "1em",
-            "border": "1.5px solid #ced4da",
-            "borderRadius": "5px",
-            "outline": "none",
-            ":focus": {
-              "borderColor": "#007bff"
-            }
+            "width": "100%", "boxSizing": "border-box", "padding": "0.6em 0.75em",
+            "fontSize": "1em", "border": "1.5px solid #ced4da", "borderRadius": "5px", "outline": "none",
+            ":focus": { "borderColor": "#007bff" }
           }
         },
         {
           "tagName": "small",
           "textContent": "Name must be at least 2 characters.",
-          "hidden": {
-            "$ref": "#/$defs/$nameValid"
-          },
-          "style": {
-            "color": "#dc3545",
-            "fontSize": "0.8em"
-          }
+          "hidden": { "$ref": "#/$defs/$nameValid" },
+          "style": { "color": "#dc3545", "fontSize": "0.8em" }
         }
       ]
     },
     {
       "tagName": "div",
-      "style": {
-        "marginBottom": "1.25em"
-      },
+      "style": { "marginBottom": "1.25em" },
       "children": [
         {
           "tagName": "label",
           "textContent": "Email",
-          "style": {
-            "display": "block",
-            "fontWeight": "600",
-            "marginBottom": "0.35em",
-            "color": "#555",
-            "fontSize": "0.9em"
-          }
+          "style": { "display": "block", "fontWeight": "600", "marginBottom": "0.35em", "color": "#555", "fontSize": "0.9em" }
         },
         {
           "tagName": "input",
-          "value": {
-            "$ref": "#/$defs/$email"
-          },
-          "oninput": {
-            "$ref": "#/$defs/setEmail"
-          },
-          "attributes": {
-            "type": "email",
-            "placeholder": "you@example.com"
-          },
+          "value": { "$ref": "#/$defs/$email" },
+          "oninput": { "$ref": "#/$defs/setEmail" },
+          "attributes": { "type": "email", "placeholder": "you@example.com" },
           "style": {
-            "width": "100%",
-            "boxSizing": "border-box",
-            "padding": "0.6em 0.75em",
-            "fontSize": "1em",
-            "border": "1.5px solid #ced4da",
-            "borderRadius": "5px",
-            "outline": "none",
-            ":focus": {
-              "borderColor": "#007bff"
-            }
+            "width": "100%", "boxSizing": "border-box", "padding": "0.6em 0.75em",
+            "fontSize": "1em", "border": "1.5px solid #ced4da", "borderRadius": "5px", "outline": "none",
+            ":focus": { "borderColor": "#007bff" }
           }
         },
         {
           "tagName": "small",
           "textContent": "Enter a valid email address.",
-          "hidden": {
-            "$ref": "#/$defs/$emailValid"
-          },
-          "style": {
-            "color": "#dc3545",
-            "fontSize": "0.8em"
-          }
+          "hidden": { "$ref": "#/$defs/$emailValid" },
+          "style": { "color": "#dc3545", "fontSize": "0.8em" }
         }
       ]
     },
     {
       "tagName": "div",
-      "style": {
-        "marginBottom": "1.5em"
-      },
+      "style": { "marginBottom": "1.5em" },
       "children": [
         {
           "tagName": "label",
           "textContent": "Message",
-          "style": {
-            "display": "block",
-            "fontWeight": "600",
-            "marginBottom": "0.35em",
-            "color": "#555",
-            "fontSize": "0.9em"
-          }
+          "style": { "display": "block", "fontWeight": "600", "marginBottom": "0.35em", "color": "#555", "fontSize": "0.9em" }
         },
         {
           "tagName": "textarea",
-          "textContent": {
-            "$ref": "#/$defs/$message"
-          },
-          "oninput": {
-            "$ref": "#/$defs/setMessage"
-          },
-          "attributes": {
-            "rows": "4",
-            "placeholder": "Your message (min 10 characters)…"
-          },
+          "textContent": { "$ref": "#/$defs/$message" },
+          "oninput": { "$ref": "#/$defs/setMessage" },
+          "attributes": { "rows": "4", "placeholder": "Your message (min 10 characters)…" },
           "style": {
-            "width": "100%",
-            "boxSizing": "border-box",
-            "padding": "0.6em 0.75em",
-            "fontSize": "1em",
-            "border": "1.5px solid #ced4da",
-            "borderRadius": "5px",
-            "outline": "none",
+            "width": "100%", "boxSizing": "border-box", "padding": "0.6em 0.75em",
+            "fontSize": "1em", "border": "1.5px solid #ced4da", "borderRadius": "5px", "outline": "none",
             "resize": "vertical",
-            ":focus": {
-              "borderColor": "#007bff"
-            }
+            ":focus": { "borderColor": "#007bff" }
           }
         },
         {
           "tagName": "small",
           "textContent": "Message must be at least 10 characters.",
-          "hidden": {
-            "$ref": "#/$defs/$messageValid"
-          },
-          "style": {
-            "color": "#dc3545",
-            "fontSize": "0.8em"
-          }
+          "hidden": { "$ref": "#/$defs/$messageValid" },
+          "style": { "color": "#dc3545", "fontSize": "0.8em" }
         }
       ]
     },
     {
       "tagName": "div",
-      "style": {
-        "display": "flex",
-        "gap": "0.75em"
-      },
+      "style": { "display": "flex", "gap": "0.75em" },
       "children": [
         {
           "tagName": "button",
           "textContent": "Send Message",
-          "onclick": {
-            "$ref": "#/$defs/submit"
-          },
+          "onclick": { "$ref": "#/$defs/submit" },
           "style": {
-            "flex": "1",
-            "padding": "0.7em 1em",
-            "fontSize": "1em",
-            "backgroundColor": "#28a745",
-            "color": "white",
-            "border": "none",
-            "borderRadius": "5px",
-            "cursor": "pointer",
-            "fontWeight": "600",
-            ":hover": {
-              "backgroundColor": "#218838"
-            },
-            ":disabled": {
-              "backgroundColor": "#adb5bd",
-              "cursor": "not-allowed"
-            }
+            "flex": "1", "padding": "0.7em 1em", "fontSize": "1em",
+            "backgroundColor": "#28a745", "color": "white", "border": "none",
+            "borderRadius": "5px", "cursor": "pointer", "fontWeight": "600",
+            ":hover": { "backgroundColor": "#218838" },
+            ":disabled": { "backgroundColor": "#adb5bd", "cursor": "not-allowed" }
           }
         },
         {
           "tagName": "button",
           "textContent": "Reset",
-          "onclick": {
-            "$ref": "#/$defs/reset"
-          },
+          "onclick": { "$ref": "#/$defs/reset" },
           "style": {
-            "padding": "0.7em 1.25em",
-            "fontSize": "1em",
-            "backgroundColor": "white",
-            "color": "#6c757d",
-            "border": "1px solid #ced4da",
-            "borderRadius": "5px",
-            "cursor": "pointer",
-            ":hover": {
-              "backgroundColor": "#f8f9fa"
-            }
+            "padding": "0.7em 1.25em", "fontSize": "1em",
+            "backgroundColor": "white", "color": "#6c757d",
+            "border": "1px solid #ced4da", "borderRadius": "5px", "cursor": "pointer",
+            ":hover": { "backgroundColor": "#f8f9fa" }
           }
         }
       ]
     },
     {
       "tagName": "div",
-      "hidden": {
-        "$ref": "#/$defs/$submitted"
-      },
+      "hidden": { "$ref": "#/$defs/$submitted" },
       "style": {
-        "marginTop": "1.25em",
-        "padding": "0.85em 1em",
-        "backgroundColor": "#d4edda",
-        "border": "1px solid #c3e6cb",
-        "borderRadius": "5px",
-        "color": "#155724",
-        "fontSize": "0.9em"
+        "marginTop": "1.25em", "padding": "0.85em 1em",
+        "backgroundColor": "#d4edda", "border": "1px solid #c3e6cb",
+        "borderRadius": "5px", "color": "#155724", "fontSize": "0.9em"
       },
       "textContent": "Awaiting submission…"
     },
     {
       "tagName": "details",
       "style": {
-        "marginTop": "1.5em",
-        "padding": "0.75em 1em",
-        "backgroundColor": "#f8f9fa",
-        "borderRadius": "5px",
-        "fontSize": "0.8em",
-        "color": "#6c757d"
+        "marginTop": "1.5em", "padding": "0.75em 1em",
+        "backgroundColor": "#f8f9fa", "borderRadius": "5px",
+        "fontSize": "0.8em", "color": "#6c757d"
       },
       "children": [
         {
           "tagName": "summary",
           "textContent": "Live form state",
-          "style": {
-            "cursor": "pointer",
-            "fontWeight": "600",
-            "marginBottom": "0.5em"
-          }
+          "style": { "cursor": "pointer", "fontWeight": "600", "marginBottom": "0.5em" }
         },
         {
           "tagName": "div",
@@ -355,46 +210,22 @@
             {
               "tagName": "div",
               "children": [
-                {
-                  "tagName": "strong",
-                  "textContent": "name: "
-                },
-                {
-                  "tagName": "span",
-                  "textContent": {
-                    "$ref": "#/$defs/$name"
-                  }
-                }
+                { "tagName": "strong", "textContent": "name: " },
+                { "tagName": "span", "textContent": { "$ref": "#/$defs/$name" } }
               ]
             },
             {
               "tagName": "div",
               "children": [
-                {
-                  "tagName": "strong",
-                  "textContent": "email: "
-                },
-                {
-                  "tagName": "span",
-                  "textContent": {
-                    "$ref": "#/$defs/$email"
-                  }
-                }
+                { "tagName": "strong", "textContent": "email: " },
+                { "tagName": "span", "textContent": { "$ref": "#/$defs/$email" } }
               ]
             },
             {
               "tagName": "div",
               "children": [
-                {
-                  "tagName": "strong",
-                  "textContent": "valid: "
-                },
-                {
-                  "tagName": "span",
-                  "textContent": {
-                    "$ref": "#/$defs/$formValid"
-                  }
-                }
+                { "tagName": "strong", "textContent": "valid: " },
+                { "tagName": "span", "textContent": { "$ref": "#/$defs/$formValid" } }
               ]
             }
           ]

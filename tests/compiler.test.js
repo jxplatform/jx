@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { compile, isDynamic } from '../compiler/compiler.js';
 
-// ─── isDynamic ────────────────────────────────────────────────────────────────
+// ─── isDynamic — Five-Shape $defs Grammar ────────────────────────────────────
 
 describe('isDynamic', () => {
   test('null → false', () => expect(isDynamic(null)).toBe(false));
@@ -10,18 +10,52 @@ describe('isDynamic', () => {
     expect(isDynamic({ tagName: 'div', textContent: 'hello' })).toBe(false);
   });
 
-  test('signal:true in $defs → true', () => {
-    expect(isDynamic({ $defs: { $x: { signal: true } } })).toBe(true);
+  // Shape 1: Naked values in $defs → dynamic
+  test('naked string in $defs → true', () => {
+    expect(isDynamic({ $defs: { $name: 'hello' } })).toBe(true);
   });
-  test('$compute in $defs → true', () => {
-    expect(isDynamic({ $defs: { $y: { $compute: 'x+1' } } })).toBe(true);
+  test('naked number in $defs → true', () => {
+    expect(isDynamic({ $defs: { $count: 42 } })).toBe(true);
   });
-  test('$handler in $defs → true', () => {
-    expect(isDynamic({ $defs: { fn: { $handler: true } } })).toBe(true);
+  test('naked boolean in $defs → true', () => {
+    expect(isDynamic({ $defs: { $flag: false } })).toBe(true);
   });
+  test('naked null in $defs → true', () => {
+    expect(isDynamic({ $defs: { $x: null } })).toBe(true);
+  });
+  test('naked array in $defs → true', () => {
+    expect(isDynamic({ $defs: { $items: [1, 2] } })).toBe(true);
+  });
+
+  // Shape 2: Expanded signal with default → dynamic
+  test('object with default in $defs → true', () => {
+    expect(isDynamic({ $defs: { $count: { type: 'integer', default: 0 } } })).toBe(true);
+  });
+
+  // Shape 2b: Pure type def → static
+  test('object with only schema keywords (no default) → false', () => {
+    expect(isDynamic({ $defs: { email: { type: 'string', format: 'email' } } })).toBe(false);
+  });
+
+  // Shape 3: Template string in $defs → dynamic (it's a naked string with ${})
+  test('template string in $defs → true', () => {
+    expect(isDynamic({ $defs: { $label: '${$count.get()} items' } })).toBe(true);
+  });
+
+  // Shape 4 & 5: $prototype → dynamic
   test('$prototype in $defs → true', () => {
     expect(isDynamic({ $defs: { $r: { $prototype: 'Request' } } })).toBe(true);
   });
+  test('$prototype: "Function" in $defs → true', () => {
+    expect(isDynamic({ $defs: { fn: { $prototype: 'Function', body: 'return 1;' } } })).toBe(true);
+  });
+
+  // Plain object in $defs → dynamic (Signal.State)
+  test('plain object in $defs → true', () => {
+    expect(isDynamic({ $defs: { $cfg: { x: 1, y: 2 } } })).toBe(true);
+  });
+
+  // Structural dynamic indicators
   test('$switch on node → true', () => {
     expect(isDynamic({ $switch: { $ref: '#/$defs/$x' } })).toBe(true);
   });
@@ -31,6 +65,16 @@ describe('isDynamic', () => {
   test('$ref in non-reserved property → true', () => {
     expect(isDynamic({ tagName: 'span', textContent: { $ref: '#/$defs/$x' } })).toBe(true);
   });
+
+  // Template strings in properties → dynamic
+  test('${} template string in textContent property → true', () => {
+    expect(isDynamic({ tagName: 'span', textContent: '${$count.get()}' })).toBe(true);
+  });
+  test('${} template string in className property → true', () => {
+    expect(isDynamic({ tagName: 'div', className: '${$active.get() ? "on" : "off"}' })).toBe(true);
+  });
+
+  // Static checks
   test('static property object without $ref → false', () => {
     expect(isDynamic({ tagName: 'div', style: { color: 'red' } })).toBe(false);
   });
@@ -130,7 +174,6 @@ describe('compile — static nodes', () => {
 
   test('style with nested selector excluded from inline', async () => {
     const html = await compile({ tagName: 'div', style: { color: 'blue', ':hover': { color: 'red' } } });
-    // inline style should NOT contain the :hover block text
     const inlineMatch = html.match(/style="([^"]*)"/);
     if (inlineMatch) {
       expect(inlineMatch[1]).not.toContain(':hover');
@@ -150,12 +193,6 @@ describe('compile — static nodes', () => {
   test('custom attributes block — boolean value', async () => {
     const html = await compile({ tagName: 'div', attributes: { 'data-flag': true } });
     expect(html).toContain('data-flag="true"');
-  });
-
-  test('custom attributes block — object value skipped (tested via buildAttrs path, not compile)', () => {
-    // $ref objects in attributes make the node dynamic → island, not static attrs.
-    // Covered by isDynamic('$ref in non-reserved property → true') test above.
-    expect(true).toBe(true);
   });
 
   test('textContent escaped', async () => {
@@ -185,41 +222,46 @@ describe('compile — static nodes', () => {
     expect(html).toContain('<br></br>');
   });
 
-  test('$handlers emits <script type="module" src="..."> in head', async () => {
-    const html = await compile({ tagName: 'div', $handlers: './app.js' });
-    expect(html).toContain('<script type="module" src="./app.js">');
-  });
-
   test('no $handlers → no module script in head', async () => {
     const html = await compile({ tagName: 'div' });
     expect(html).not.toContain('src="');
   });
+
+  test('pure type def $defs → no island (static)', async () => {
+    const html = await compile({
+      tagName: 'div',
+      $defs: { email: { type: 'string', format: 'email' } },
+      textContent: 'hello',
+    });
+    expect(html).not.toContain('data-jsonsx-island');
+    expect(html).toContain('hello');
+  });
 });
 
-// ─── compile — dynamic islands ────────────────────────────────────────────────
+// ─── compile — dynamic islands ───────────────────────────────────────────────
 
 describe('compile — dynamic islands', () => {
-  test('dynamic root emits hydration island', async () => {
+  test('dynamic root with naked value $defs emits hydration island', async () => {
     const html = await compile({
       tagName: 'my-counter',
-      $defs: { $count: { signal: true, default: 0 } },
+      $defs: { $count: 0 },
     });
     expect(html).toContain('data-jsonsx-island');
     expect(html).toContain('application/jsonsx+json');
   });
 
-  test('island inlines JSON descriptor', async () => {
-    const doc = {
+  test('dynamic root with expanded signal emits island', async () => {
+    const html = await compile({
       tagName: 'my-widget',
-      $defs: { $x: { signal: true, default: 1 } },
-    };
-    const html = await compile(doc);
+      $defs: { $x: { type: 'integer', default: 1 } },
+    });
+    expect(html).toContain('data-jsonsx-island');
     expect(html).toContain('"$x"');
   });
 
   test('dynamic island emits runtime bootstrap script', async () => {
     const html = await compile(
-      { tagName: 'div', $defs: { $n: { signal: true, default: 0 } } },
+      { tagName: 'div', $defs: { $n: 0 } },
       { runtimeSrc: '/dist/runtime.js' }
     );
     expect(html).toContain("import { JSONsx } from '/dist/runtime.js'");
@@ -237,7 +279,19 @@ describe('compile — dynamic islands', () => {
       tagName: 'main',
       children: [
         { tagName: 'p', textContent: 'static' },
-        { tagName: 'span', $defs: { $v: { signal: true, default: 0 } } },
+        { tagName: 'span', $defs: { $v: 0 } },
+      ],
+    });
+    expect(html).toContain('<p>static</p>');
+    expect(html).toContain('data-jsonsx-island');
+  });
+
+  test('${} template string in property makes node dynamic', async () => {
+    const html = await compile({
+      tagName: 'main',
+      children: [
+        { tagName: 'p', textContent: 'static' },
+        { tagName: 'span', textContent: '${$count.get()}' },
       ],
     });
     expect(html).toContain('<p>static</p>');

@@ -1,13 +1,20 @@
 {
   "$schema": "https://declarative-dom.org/schema/v1",
   "$id": "ExamplesIndex",
-  "$handlers": "./index.js",
   "$defs": {
-    "$activeTab": { "type": "string", "default": "counter", "signal": true },
-    "$iframeSrc": { "type": "string", "default": "./counter/index.html", "signal": true },
-    "$sourceText": { "type": "string", "default": "Loading...", "signal": true },
-    "selectTab": { "$handler": true },
-    "onMount":   { "$handler": true, "description": "Load initial source on mount" }
+    "$activeTab": { "type": "string", "default": "counter" },
+    "$iframeSrc": { "type": "string", "default": "./counter/index.html" },
+    "$sourceText": { "type": "string", "default": "Loading..." },
+    "selectTab": {
+      "$prototype": "Function",
+      "$src": "./index.js",
+      "description": "Switch active example tab"
+    },
+    "onMount": {
+      "$prototype": "Function",
+      "$src": "./index.js",
+      "description": "Load initial source on mount"
+    }
   },
   "tagName": "div",
   "style": {
@@ -44,7 +51,7 @@
         ],
         "map": {
           "tagName": "button",
-          "textContent": { "$ref": "$map/item/label" },
+          "textContent": "${$map.item.label}",
           "style": {
             "background": "none",
             "border": "none",
@@ -60,7 +67,7 @@
               "borderBottomColor": "#bbb"
             }
           },
-          "attributes": { "data-tab": { "$ref": "$map/item/id" } },
+          "attributes": { "data-tab": "${$map.item.id}" },
           "onclick": { "$ref": "#/$defs/selectTab" }
         }
       }

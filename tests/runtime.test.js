@@ -62,13 +62,23 @@ describe('toCSSText', () => {
 
 describe('RESERVED_KEYS', () => {
   test('is a Set', () => expect(RESERVED_KEYS).toBeInstanceOf(Set));
-  const required = ['$schema', '$id', '$defs', '$handlers', '$ref', '$props',
-    '$switch', '$prototype', '$handler', '$compute', '$deps', '$media',
+
+  // New grammar reserved keys
+  const required = ['$schema', '$id', '$defs', '$ref', '$props',
+    '$switch', '$prototype', '$media', '$map',
     '$src', '$export',
     'signal', 'timing', 'default', 'tagName', 'children', 'style', 'attributes',
-    'items', 'map', 'filter', 'sort', 'cases'];
+    'items', 'map', 'filter', 'sort', 'cases',
+    'body', 'arguments', 'name',
+  ];
   for (const k of required) {
     test(`contains "${k}"`, () => expect(RESERVED_KEYS.has(k)).toBe(true));
+  }
+
+  // Removed keys should NOT be present
+  const removed = ['$handlers', '$handler', '$compute', '$deps'];
+  for (const k of removed) {
+    test(`does NOT contain "${k}"`, () => expect(RESERVED_KEYS.has(k)).toBe(false));
   }
 });
 
@@ -143,7 +153,7 @@ describe('resolve', () => {
   });
 });
 
-// ─── buildScope ───────────────────────────────────────────────────────────────
+// ─── buildScope — Five-Shape $defs Grammar ───────────────────────────────────
 
 describe('buildScope', () => {
   const BASE = 'http://localhost/';
@@ -153,68 +163,132 @@ describe('buildScope', () => {
     expect(scope).toEqual({});
   });
 
-  test('creates Signal.State for signal:true defs', async () => {
-    const doc = { $defs: { $count: { signal: true, default: 7 } } };
-    const scope = await buildScope(doc, {}, BASE);
+  // Shape 1: Naked values → Signal.State
+  test('Shape 1: string → Signal.State', async () => {
+    const scope = await buildScope({ $defs: { $name: 'hello' } }, {}, BASE);
+    expect(isSignal(scope['$name'])).toBe(true);
+    expect(scope['$name'].get()).toBe('hello');
+  });
+
+  test('Shape 1: number → Signal.State', async () => {
+    const scope = await buildScope({ $defs: { $count: 42 } }, {}, BASE);
+    expect(isSignal(scope['$count'])).toBe(true);
+    expect(scope['$count'].get()).toBe(42);
+  });
+
+  test('Shape 1: boolean → Signal.State', async () => {
+    const scope = await buildScope({ $defs: { $flag: false } }, {}, BASE);
+    expect(isSignal(scope['$flag'])).toBe(true);
+    expect(scope['$flag'].get()).toBe(false);
+  });
+
+  test('Shape 1: null → Signal.State', async () => {
+    const scope = await buildScope({ $defs: { $x: null } }, {}, BASE);
+    expect(isSignal(scope['$x'])).toBe(true);
+    expect(scope['$x'].get()).toBeNull();
+  });
+
+  test('Shape 1: array → Signal.State', async () => {
+    const scope = await buildScope({ $defs: { $items: [1, 2, 3] } }, {}, BASE);
+    expect(isSignal(scope['$items'])).toBe(true);
+    expect(scope['$items'].get()).toEqual([1, 2, 3]);
+  });
+
+  test('Shape 1: plain object → Signal.State', async () => {
+    const scope = await buildScope({ $defs: { $cfg: { x: 1, y: 2 } } }, {}, BASE);
+    expect(isSignal(scope['$cfg'])).toBe(true);
+    expect(scope['$cfg'].get()).toEqual({ x: 1, y: 2 });
+  });
+
+  // Shape 2: Expanded signal with default
+  test('Shape 2: object with default → Signal.State(default)', async () => {
+    const scope = await buildScope({ $defs: { $count: { type: 'integer', default: 7 } } }, {}, BASE);
     expect(isSignal(scope['$count'])).toBe(true);
     expect(scope['$count'].get()).toBe(7);
   });
 
-  test('default null when no default provided', async () => {
-    const doc = { $defs: { $x: { signal: true } } };
-    const scope = await buildScope(doc, {}, BASE);
-    expect(scope['$x'].get()).toBeNull();
+  // Shape 2b: Pure type definition (schema-only, no default)
+  test('Shape 2b: object with only schema keywords → skipped (no signal)', async () => {
+    const scope = await buildScope({ $defs: { email: { type: 'string', format: 'email' } } }, {}, BASE);
+    expect(scope['email']).toBeUndefined();
   });
 
-  test('skips $handler:true entries', async () => {
-    const doc = { $defs: { onClick: { $handler: true } } };
-    const scope = await buildScope(doc, {}, BASE);
-    expect(scope['onClick']).toBeUndefined();
+  // Shape 3: Template string → Signal.Computed
+  test('Shape 3: string with ${} → Signal.Computed', async () => {
+    const parent = { $count: mkState(5) };
+    const scope = await buildScope({ $defs: { $label: '${$count.get()} items' } }, parent, BASE);
+    expect(isSignal(scope['$label'])).toBe(true);
+    expect(scope['$label'].get()).toBe('5 items');
   });
 
-  test('creates computed signal for $compute', async () => {
-    const doc = {
+  // Shape 4: $prototype: "Function" with body
+  test('Shape 4: Function with body → bound function', async () => {
+    const scope = await buildScope({
       $defs: {
-        $n:  { signal: true, default: 3 },
-        // JSONata bindings: runtime strips '$' → binds as 'n'; expression uses '$n'
-        $d:  { $compute: '$n * 2', $deps: ['#/$defs/$n'], signal: true },
-      },
-    };
-    const scope = await buildScope(doc, {}, 'http://localhost/');
-    expect(isSignal(scope['$d'])).toBe(true);
-    // Pump microtask queue to let JSONata.evaluate() Promise resolve
-    for (let i = 0; i < 50; i++) await Promise.resolve();
-    expect(scope['$d'].get()).toBe(6);
+        $count: 0,
+        increment: { $prototype: 'Function', body: 'this.$count.set(this.$count.get() + 1);' }
+      }
+    }, {}, BASE);
+    expect(typeof scope['increment']).toBe('function');
+    scope['increment']();
+    expect(scope['$count'].get()).toBe(1);
   });
 
-  test('creates prototype signal for $prototype without signal:true', async () => {
+  test('Shape 4: Function with body and signal:true → Signal.Computed', async () => {
+    const scope = await buildScope({
+      $defs: {
+        $n: 3,
+        $doubled: { $prototype: 'Function', body: 'return this.$n.get() * 2;', signal: true }
+      }
+    }, {}, BASE);
+    expect(isSignal(scope['$doubled'])).toBe(true);
+    expect(scope['$doubled'].get()).toBe(6);
+  });
+
+  test('Shape 4: Function with $src → loads external function', async () => {
+    const srcUrl = new URL('./_test_handlers_fn.js', import.meta.url).href;
+    const scope = await buildScope({
+      $defs: {
+        myFn: { $prototype: 'Function', $src: srcUrl }
+      }
+    }, {}, BASE);
+    expect(typeof scope['myFn']).toBe('function');
+  });
+
+  test('Shape 4: Function with both body and $src → throws', async () => {
+    await expect(buildScope({
+      $defs: {
+        bad: { $prototype: 'Function', body: 'return 1;', $src: './foo.js' }
+      }
+    }, {}, BASE)).rejects.toThrow('mutually exclusive');
+  });
+
+  test('Shape 4: Function with neither body nor $src → throws', async () => {
+    await expect(buildScope({
+      $defs: {
+        bad: { $prototype: 'Function' }
+      }
+    }, {}, BASE)).rejects.toThrow('no body or $src');
+  });
+
+  // Shape 5: External class $prototype
+  test('Shape 5: $prototype other than Function → resolvePrototype', async () => {
     const doc = { $defs: { $items: { $prototype: 'Set', default: [1, 2] } } };
-    const scope = await buildScope(doc, {}, 'http://localhost/');
+    const scope = await buildScope(doc, {}, BASE);
     expect(isSignal(scope['$items'])).toBe(true);
   });
 
-  test('creates prototype signal for $prototype with signal:true', async () => {
-    const doc = { $defs: { $items: { $prototype: 'Set', signal: true, default: [1] } } };
-    const scope = await buildScope(doc, {}, 'http://localhost/');
-    expect(isSignal(scope['$items'])).toBe(true);
-  });
-
+  // Scope merging
   test('merges parentScope', async () => {
     const parent = { $existing: 'from-parent' };
-    const scope = await buildScope({}, parent, 'http://localhost/');
+    const scope = await buildScope({}, parent, BASE);
     expect(scope['$existing']).toBe('from-parent');
   });
 
   test('stores $media in scope', async () => {
     const doc = { $media: { '--md': '(min-width: 768px)' } };
-    const scope = await buildScope(doc, {}, 'http://localhost/');
+    const scope = await buildScope(doc, {}, BASE);
     expect(scope['$media']).toEqual({ '--md': '(min-width: 768px)' });
-  });
-
-  test('loads $handlers and merges exports', async () => {
-    const handlersUrl = new URL('./_test_handlers_fn.js', import.meta.url).href;
-    const scope = await buildScope({ $handlers: handlersUrl }, {}, 'http://localhost/');
-    expect(typeof scope['myFn']).toBe('function');
   });
 });
 
@@ -246,8 +320,6 @@ describe('applyStyle', () => {
     const uid = el.dataset.jsonsx;
     const style = document.head.querySelector('style');
     expect(style).not.toBeNull();
-    // :sel → "[data-jsonsx="uid"] :hover" (space-separated — targets descendants)
-    // Use &:hover for self-pseudo (no space)
     expect(style.textContent).toContain(`[data-jsonsx="${uid}"] :hover`);
     expect(style.textContent).toContain('color: blue');
   });
@@ -291,7 +363,6 @@ describe('applyStyle', () => {
   test('falls back to raw name when @--name not found in mediaQueries', () => {
     applyStyle(el, { '@--xl': { gap: '2rem' } }, {});
     const style = document.head.querySelector('style');
-    // Falls back to the name itself "--xl" as the media condition
     expect(style.textContent).toContain('@media --xl');
   });
 
@@ -303,7 +374,7 @@ describe('applyStyle', () => {
     );
     expect(el.style.color).toBe('green');
     const style = document.head.querySelector('style');
-    expect(style.textContent).toContain('] :focus'); // :focus as descendant pseudo
+    expect(style.textContent).toContain('] :focus');
     expect(style.textContent).toContain('@media (min-width: 640px)');
   });
 });
@@ -445,7 +516,6 @@ describe('resolvePrototype', () => {
   });
 
   test('IndexedDB: returns Signal.State', async () => {
-    // happy-dom doesn't provide indexedDB — stub it for this test
     const fakeReq = { onupgradeneeded: null, onsuccess: null, onerror: null };
     global.indexedDB = { open: () => fakeReq };
     const sig = await resolvePrototype({
@@ -605,7 +675,6 @@ describe('renderNode', () => {
 
   test('ignores handler $ref when not a function', () => {
     const scope = { $notFn: 42 };
-    // Should not throw
     expect(() => renderNode({ tagName: 'div', onclick: { $ref: '#/$defs/$notFn' } }, scope)).not.toThrow();
   });
 
@@ -628,6 +697,27 @@ describe('renderNode', () => {
     const scope = { '$val': 'hello' };
     const el = renderNode({ tagName: 'div', attributes: { 'aria-label': { $ref: '#/$defs/$val' } } }, scope);
     expect(el.getAttribute('aria-label')).toBe('hello');
+  });
+
+  // Template string ${} tests
+  test('${} template string in textContent renders reactively', async () => {
+    const $count = mkState(5);
+    const scope = { $count };
+    const el = renderNode({ tagName: 'span', textContent: '${$count.get()} items' }, scope);
+    expect(el.textContent).toBe('5 items');
+    $count.set(10);
+    await Promise.resolve();
+    expect(el.textContent).toBe('10 items');
+  });
+
+  test('${} template string in className', async () => {
+    const $active = mkState(true);
+    const scope = { $active };
+    const el = renderNode({ tagName: 'div', className: '${$active.get() ? "active" : "inactive"}' }, scope);
+    expect(el.className).toBe('active');
+    $active.set(false);
+    await Promise.resolve();
+    expect(el.className).toBe('inactive');
   });
 
   test('renders children recursively', () => {
@@ -799,7 +889,6 @@ describe('renderNode', () => {
       $props: { '$val': { $ref: '#/$defs/$count' } },
       textContent: 'ok',
     };
-    // renderNode calls mergeProps then re-renders without $props
     const el = renderNode(def, scope);
     expect(el.textContent).toBe('ok');
   });
@@ -820,16 +909,29 @@ describe('JSONsx', () => {
     expect(target.children[0].textContent).toBe('mounted');
   });
 
-  test('returns scope', async () => {
+  test('returns scope with naked value signal', async () => {
     const target = document.createElement('div');
-    const scope = await JSONsx({ tagName: 'div', $defs: { $x: { signal: true, default: 1 } } }, target);
+    const scope = await JSONsx({ tagName: 'div', $defs: { $x: 1 } }, target);
     expect(isSignal(scope['$x'])).toBe(true);
+    expect(scope['$x'].get()).toBe(1);
+  });
+
+  test('returns scope with expanded signal', async () => {
+    const target = document.createElement('div');
+    const scope = await JSONsx({ tagName: 'div', $defs: { $x: { default: 5 } } }, target);
+    expect(isSignal(scope['$x'])).toBe(true);
+    expect(scope['$x'].get()).toBe(5);
   });
 
   test('calls onMount if present in scope', async () => {
     const target = document.createElement('div');
-    const handlersUrl = new URL('./_test_handlers.js', import.meta.url).href;
-    await JSONsx({ tagName: 'div', $handlers: handlersUrl }, target);
+    const srcUrl = new URL('./_test_handlers.js', import.meta.url).href;
+    await JSONsx({
+      tagName: 'div',
+      $defs: {
+        onMount: { $prototype: 'Function', $src: srcUrl }
+      }
+    }, target);
     await wait();
     expect(globalThis._testMounted).toBe(true);
     delete globalThis._testMounted;

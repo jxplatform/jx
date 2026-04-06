@@ -1,1 +1,2 @@
-export default { myFn() { return 42; } };
+// Named export for $src Function resolution test
+export function myFn() { return 42; }

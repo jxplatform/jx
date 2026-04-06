@@ -1,13 +1,11 @@
 {
   "$schema": "../../schema/schema.json",
   "$id": "FetchDemo",
-  "$handlers": "./fetch-demo.js",
 
   "$defs": {
     "$userId": {
       "type": "integer",
       "default": 1,
-      "signal": true,
       "description": "Currently selected user ID (drives reactive fetch)"
     },
 
@@ -29,28 +27,28 @@
       "description": "Posts for the selected user"
     },
 
-    "$userLabel": {
-      "$compute": "$userId > 0 ? 'User #' & $string($userId) : 'Select a user'",
-      "$deps": ["#/$defs/$userId"],
-      "type": "string",
-      "signal": true
-    },
-
+    "$userLabel": "${$userId.get() > 0 ? 'User #' + $userId.get() : 'Select a user'}",
     "$userDisplay": {
-      "$compute": "$string($user)",
-      "$deps": ["#/$defs/$user"],
-      "type": "string",
+      "$prototype": "Function",
+      "body": "return JSON.stringify(this.$user.get(), null, 2);",
       "signal": true
     },
     "$postsDisplay": {
-      "$compute": "$string($posts)",
-      "$deps": ["#/$defs/$posts"],
-      "type": "string",
+      "$prototype": "Function",
+      "body": "return JSON.stringify(this.$posts.get(), null, 2);",
       "signal": true
     },
 
-    "prevUser": { "$handler": true },
-    "nextUser": { "$handler": true }
+    "prevUser": {
+      "$prototype": "Function",
+      "$src": "./fetch-demo.js",
+      "description": "Navigate to previous user"
+    },
+    "nextUser": {
+      "$prototype": "Function",
+      "$src": "./fetch-demo.js",
+      "description": "Navigate to next user"
+    }
   },
 
   "tagName": "fetch-demo",

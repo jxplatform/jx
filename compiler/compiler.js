@@ -1,6 +1,6 @@
 /**
  * jsonsx-compiler.js — Static HTML emitter + hydration island detector
- * @version 0.1.0
+ * @version 1.0.0
  * @license MIT
  *
  * Usage (Node.js build step):
@@ -9,10 +9,13 @@
  *
  * Output tiers (§16.2 of spec):
  *   Fully static subtree           → plain HTML, zero JS
- *   Signals only (no handlers)     → HTML + inline signal init script
- *   Signals + handlers             → HTML + <script type="module"> for $handlers
- *   Server-timed Request           → HTML with baked response data
  *   Dynamic subtree                → <script type="application/jsonsx+json"> island
+ *
+ * Static detection uses the five-shape $defs grammar:
+ *   - Naked values / expanded signals / template strings → dynamic (signals)
+ *   - $prototype entries → dynamic (external class or Function)
+ *   - Pure type defs (schema keywords only, no default) → static
+ *   - ${} template strings in properties → dynamic
  *
  * The compiler has zero novel static-analysis logic for JS — it reads only JSON.
  * The JSON IS the bundle manifest (§16.5).
@@ -42,9 +45,13 @@ export async function compile(sourcePath, opts = {}) {
 
   const styleBlock    = compileStyles(doc);
   const bodyContent   = compileNode(doc, isNodeDynamic(doc));
-  const handlerScript = doc.$handlers
-    ? `<script type="module" src="${doc.$handlers}"></script>`
+
+  // Collect unique $src imports from $prototype: "Function" entries
+  const srcImports = collectSrcImports(doc);
+  const srcScript = srcImports.length
+    ? `<script type="module">\n${srcImports.map(s => `  import '${s}';`).join('\n')}\n</script>`
     : '';
+
   const runtimeScript = hasAnyIsland(doc)
     ? `<script type="module">
   import { JSONsx } from '${runtimeSrc}';
@@ -62,7 +69,7 @@ export async function compile(sourcePath, opts = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
   ${styleBlock}
-  ${handlerScript}
+  ${srcScript}
 </head>
 <body>
   ${bodyContent}
@@ -74,16 +81,45 @@ export async function compile(sourcePath, opts = {}) {
 // ─── Static detection (§16.1) ─────────────────────────────────────────────────
 
 /**
+ * Schema-only keywords used to detect pure type definitions (Shape 2b).
+ * An object with ONLY these keys and no `default` is a type def, not a signal.
+ */
+const SCHEMA_KEYWORDS = new Set([
+  'type', 'enum', 'minimum', 'maximum', 'minLength', 'maxLength',
+  'pattern', 'format', 'items', 'properties', 'required',
+  'description', 'title', '$comment',
+]);
+
+/**
+ * Returns true if an object contains only schema keywords (no `default`, no `$prototype`).
+ */
+function isSchemaOnly(obj) {
+  for (const k of Object.keys(obj)) {
+    if (!SCHEMA_KEYWORDS.has(k)) return false;
+  }
+  return true;
+}
+
+/**
+ * Returns true if a string contains a ${} template expression.
+ */
+function isTemplateString(val) {
+  return typeof val === 'string' && val.includes('${');
+}
+
+/**
  * Determine whether a node (or any of its descendants) requires client-side
- * JavaScript. A node is static if and only if:
+ * JavaScript. A node is static if and only if its $defs contain no signals,
+ * no template strings, no functions, no external classes; it has no $switch,
+ * no array prototype children, no $ref bindings, and no ${} in properties.
  *
- *   - No signal:true $defs entry
- *   - No $compute expression
- *   - No $handler:true declaration
- *   - No $prototype namespace
- *   - No $switch node
- *   - No Array prototype children
- *   - No $ref bindings on element properties
+ * Five-shape detection for $defs:
+ *   - string/number/boolean/null/array → dynamic (Signal.State)
+ *   - string with ${} → dynamic (Signal.Computed)
+ *   - object with $prototype → dynamic
+ *   - object with "default" → dynamic (Signal.State)
+ *   - object with schema keywords only → static (pure type def)
+ *   - plain object → dynamic (Signal.State)
  *
  * @param {object} def - JSONsx element definition
  * @returns {boolean}
@@ -93,7 +129,16 @@ export function isDynamic(def) {
 
   if (def.$defs) {
     for (const d of Object.values(def.$defs)) {
-      if (d.signal || d.$compute || d.$handler || d.$prototype) return true;
+      // Non-object values are always signals → dynamic
+      if (typeof d !== 'object' || d === null || Array.isArray(d)) return true;
+      // Object with $prototype → dynamic (Function or external class)
+      if (d.$prototype) return true;
+      // Object with default → dynamic (expanded signal)
+      if ('default' in d) return true;
+      // Object with only schema keywords → static (pure type def, skip)
+      if (isSchemaOnly(d)) continue;
+      // Plain object → dynamic (Signal.State)
+      return true;
     }
   }
 
@@ -107,6 +152,21 @@ export function isDynamic(def) {
   for (const [key, val] of Object.entries(def)) {
     if (RESERVED_KEYS.has(key)) continue;
     if (val !== null && typeof val === 'object' && typeof val.$ref === 'string') return true;
+    if (isTemplateString(val)) return true;
+  }
+
+  // Check for ${} in style values
+  if (def.style && typeof def.style === 'object') {
+    for (const val of Object.values(def.style)) {
+      if (isTemplateString(val)) return true;
+    }
+  }
+
+  // Check for ${} in attribute values
+  if (def.attributes && typeof def.attributes === 'object') {
+    for (const val of Object.values(def.attributes)) {
+      if (isTemplateString(val)) return true;
+    }
   }
 
   return false;
@@ -125,7 +185,11 @@ function isNodeDynamic(def) {
 
   if (def.$defs) {
     for (const d of Object.values(def.$defs)) {
-      if (d.signal || d.$compute || d.$handler || d.$prototype) return true;
+      if (typeof d !== 'object' || d === null || Array.isArray(d)) return true;
+      if (d.$prototype) return true;
+      if ('default' in d) return true;
+      if (isSchemaOnly(d)) continue;
+      return true;
     }
   }
 
@@ -135,6 +199,19 @@ function isNodeDynamic(def) {
   for (const [key, val] of Object.entries(def)) {
     if (RESERVED_KEYS.has(key)) continue;
     if (val !== null && typeof val === 'object' && typeof val.$ref === 'string') return true;
+    if (isTemplateString(val)) return true;
+  }
+
+  if (def.style && typeof def.style === 'object') {
+    for (const val of Object.values(def.style)) {
+      if (isTemplateString(val)) return true;
+    }
+  }
+
+  if (def.attributes && typeof def.attributes === 'object') {
+    for (const val of Object.values(def.attributes)) {
+      if (isTemplateString(val)) return true;
+    }
   }
 
   return false;
@@ -285,6 +362,32 @@ function collectStyles(def, rules, _parentSel = '') {
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * Recursively collect unique $src values from $prototype: "Function" entries.
+ *
+ * @param {object} doc - Document or subtree
+ * @returns {string[]} Unique $src paths
+ */
+function collectSrcImports(doc) {
+  const srcs = new Set();
+  _walkSrc(doc, srcs);
+  return [...srcs];
+}
+
+function _walkSrc(def, srcs) {
+  if (!def || typeof def !== 'object') return;
+  if (def.$defs) {
+    for (const d of Object.values(def.$defs)) {
+      if (d && typeof d === 'object' && d.$prototype === 'Function' && d.$src) {
+        srcs.add(d.$src);
+      }
+    }
+  }
+  if (Array.isArray(def.children)) {
+    def.children.forEach(c => _walkSrc(c, srcs));
+  }
+}
 
 /**
  * HTML-escape a string for safe attribute and text content embedding.

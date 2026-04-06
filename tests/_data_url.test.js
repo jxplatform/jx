@@ -8,18 +8,27 @@ const wait = () => new Promise(r => setTimeout(r, 0));
 const BASE = 'http://localhost/';
 
 describe('buildScope', () => {
-  test('loads $handlers and merges exports', async () => {
-    const dataUrl = 'data:text/javascript,export default { myFn() { return 42; } }';
-    const scope = await buildScope({ $handlers: dataUrl }, {}, BASE);
+  test('loads $src Function and resolves export', async () => {
+    const dataUrl = 'data:text/javascript,export function myFn() { return 42; }';
+    const scope = await buildScope({
+      $defs: {
+        myFn: { $prototype: 'Function', $src: dataUrl }
+      }
+    }, {}, BASE);
     expect(typeof scope['myFn']).toBe('function');
   });
 });
 
 describe('JSONsx', () => {
-  test('calls onMount if present in scope', async () => {
+  test('calls onMount if present in scope via $src', async () => {
     const target = document.createElement('div');
-    const dataUrl = 'data:text/javascript,export default { onMount() { globalThis._testMounted = true; } }';
-    await JSONsx({ tagName: 'div', $handlers: dataUrl }, target);
+    const srcUrl = new URL('./_test_handlers.js', import.meta.url).href;
+    await JSONsx({
+      tagName: 'div',
+      $defs: {
+        onMount: { $prototype: 'Function', $src: srcUrl }
+      }
+    }, target);
     await wait();
     expect(globalThis._testMounted).toBe(true);
     delete globalThis._testMounted;

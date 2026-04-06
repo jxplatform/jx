@@ -1,7 +1,6 @@
 {
   "$schema": "../../schema/schema.json",
   "$id": "DynamicList",
-  "$handlers": "./dynamic-list.js",
 
   "$defs": {
     "$items": {
@@ -11,23 +10,23 @@
       "signal": true,
       "description": "List items persisted in localStorage"
     },
-    "$newText": {
-      "type": "string",
-      "default": "",
-      "signal": true,
-      "description": "Value of the add-item input field"
-    },
-    "$itemCount": {
-      "$compute": "$count($items)",
-      "$deps": ["#/$defs/$items"],
-      "type": "integer",
-      "signal": true,
-      "description": "Number of items in the list"
-    },
+    "$newText": { "type": "string", "default": "", "description": "Value of the add-item input field" },
+    "$itemCount": "${$items.get().length}",
 
-    "addItem":    { "$handler": true },
-    "removeItem": { "$handler": true },
-    "updateText": { "$handler": true }
+    "addItem": {
+      "$prototype": "Function",
+      "body": "const text = this.$newText.get().trim(); if (!text) return; this.$items.set([...this.$items.get(), text]); this.$newText.set('');"
+    },
+    "removeItem": {
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "const index = this.$map?.index ?? -1; if (index < 0) return; this.$items.set(this.$items.get().filter((_, i) => i !== index));"
+    },
+    "updateText": {
+      "$prototype": "Function",
+      "arguments": ["event"],
+      "body": "this.$newText.set(event.target.value);"
+    }
   },
 
   "tagName": "dynamic-list",
@@ -102,9 +101,6 @@
         "items": { "$ref": "#/$defs/$items" },
         "map": {
           "tagName": "li",
-          "$item":        { "$ref": "$map/item" },
-          "$itemIndex":   { "$ref": "$map/index" },
-          "$removeItem":  { "$ref": "#/$defs/removeItem" },
           "style": {
             "display": "flex",
             "justifyContent": "space-between",
@@ -119,7 +115,7 @@
           "children": [
             {
               "tagName": "span",
-              "textContent": { "$ref": "$map/item" },
+              "textContent": "${$map.item}",
               "style": { "flex": "1", "color": "#333" }
             },
             {

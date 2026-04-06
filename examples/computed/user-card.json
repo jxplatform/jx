@@ -1,39 +1,40 @@
 {
   "$schema": "../../schema/schema.json",
   "$id": "UserCard",
-  "$handlers": "./user-card.js",
 
   "$defs": {
-    "$firstName": { "type": "string",  "default": "John",  "signal": true },
-    "$lastName":  { "type": "string",  "default": "Doe",   "signal": true },
-    "$score":     { "type": "integer", "default": 85,      "signal": true },
-    "$level":     { "type": "integer", "default": 1,       "signal": true },
+    "$firstName": { "type": "string",  "default": "John" },
+    "$lastName":  { "type": "string",  "default": "Doe" },
+    "$score":     { "type": "integer", "default": 85 },
+    "$level":     { "type": "integer", "default": 1 },
 
     "$fullName": {
-      "$compute": "$firstName & ' ' & $lastName",
-      "$deps":    ["#/$defs/$firstName", "#/$defs/$lastName"],
-      "type":     "string",
-      "signal":   true,
+      "$prototype": "Function",
+      "body": "return this.$firstName.get() + ' ' + this.$lastName.get();",
+      "signal": true,
       "description": "Concatenated full name"
     },
     "$displayTitle": {
-      "$compute": "$score >= 90 ? 'Expert' : $score >= 70 ? 'Advanced' : $score >= 50 ? 'Intermediate' : 'Beginner'",
-      "$deps":    ["#/$defs/$score"],
-      "type":     "string",
-      "signal":   true,
+      "$prototype": "Function",
+      "body": "const s = this.$score.get(); return s >= 90 ? 'Expert' : s >= 70 ? 'Advanced' : s >= 50 ? 'Intermediate' : 'Beginner';",
+      "signal": true,
       "description": "Skill level label derived from score"
     },
-    "$scoreLabel": {
-      "$compute": "$string($score) & '%'",
-      "$deps":    ["#/$defs/$score"],
-      "type":     "string",
-      "signal":   true,
-      "description": "Score formatted as a percentage string"
-    },
+    "$scoreLabel": "${$score.get() + '%'}",
 
-    "addScore":    { "$handler": true },
-    "subtractScore": { "$handler": true },
-    "changeName":  { "$handler": true }
+    "addScore": {
+      "$prototype": "Function",
+      "body": "const next = Math.min(100, this.$score.get() + 10); this.$score.set(next); if (next >= this.$level.get() * 20) this.$level.set(this.$level.get() + 1);"
+    },
+    "subtractScore": {
+      "$prototype": "Function",
+      "body": "this.$score.set(Math.max(0, this.$score.get() - 10));"
+    },
+    "changeName": {
+      "$prototype": "Function",
+      "$src": "./user-card.js",
+      "description": "Pick a random name (uses external function)"
+    }
   },
 
   "tagName": "user-card",
@@ -74,7 +75,7 @@
             "fontSize": "1.25rem",
             "flexShrink": "0"
           },
-          "textContent": { "$ref": "#/$defs/$level" }
+          "textContent": "${$level.get()}"
         },
         {
           "tagName": "div",

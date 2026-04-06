@@ -1,22 +1,13 @@
 /**
- * router.js — handlers for router.json
+ * router.js — external function for router.json
  *
- * A minimal client-side router driven by a single signal.
- * The navigate handler reads data-route from the clicked button
- * and sets $currentRoute, which drives the $switch renderer.
+ * With the new $defs grammar, the navigate handler is defined inline
+ * as a $prototype: "Function" entry with `body`. This sidecar is
+ * kept as documentation of the external $src pattern.
  */
 
-export default {
-
-  /**
-   * Read the data-route attribute from the clicked nav button and navigate.
-   *
-   * @param {MouseEvent} event - Click event from a nav button
-   */
-  navigate(event) {
-    const route = event.currentTarget?.dataset?.route
-      ?? event.target?.dataset?.route;
-    if (route) this.$currentRoute.set(route);
-  },
-
-};
+export function navigate(event) {
+  const route = event.currentTarget?.dataset?.route
+    ?? event.target?.dataset?.route;
+  if (route) this.$currentRoute.set(route);
+}
