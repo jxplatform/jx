@@ -43,6 +43,7 @@ import {
 } from '@atlaskit/pragmatic-drag-and-drop-hitbox/tree-item';
 
 import webdata from './webdata.json';
+import cssMeta from './css-meta.json';
 
 // ─── Globals ──────────────────────────────────────────────────────────────────
 
@@ -1831,97 +1832,11 @@ function renderInspector(container) {
     return fields;
   });
 
-  // Style section (media-tabbed)
+  // Style section (metadata-driven sidebar)
   renderInspectorSection(container, 'Style', true, () => {
     const wrapper = document.createElement('div');
     wrapper.className = 'inspector-fields';
-    const style = node.style || {};
-    const { sizeBreakpoints } = parseMediaEntries(S.document.$media);
-    const mediaNames = sizeBreakpoints.map(bp => bp.name);
-    const activeTab = S.ui.activeMedia; // null = base
-
-    // Media tabs (only if there are breakpoints)
-    if (mediaNames.length > 0) {
-      const tabs = document.createElement('div');
-      tabs.className = 'media-tabs';
-
-      const baseTab = document.createElement('div');
-      baseTab.className = `media-tab${activeTab === null ? ' active' : ''}`;
-      baseTab.textContent = 'Base';
-      baseTab.onclick = () => {
-        S = { ...S, ui: { ...S.ui, activeMedia: null } };
-        updateActivePanelHeaders();
-        renderRightPanel();
-      };
-      tabs.appendChild(baseTab);
-
-      for (const name of mediaNames) {
-        const tab = document.createElement('div');
-        tab.className = `media-tab${activeTab === name ? ' active' : ''}`;
-        tab.textContent = name;
-        tab.onclick = () => {
-          S = { ...S, ui: { ...S.ui, activeMedia: name } };
-          updateActivePanelHeaders();
-          renderRightPanel();
-        };
-        tabs.appendChild(tab);
-      }
-      wrapper.appendChild(tabs);
-    }
-
-    if (activeTab === null || mediaNames.length === 0) {
-      // Base styles: flat key-value pairs
-      for (const [prop, val] of Object.entries(style)) {
-        if (typeof val === 'object') continue;
-        wrapper.appendChild(kvRow(prop, String(val),
-          (newProp, newVal) => {
-            if (newProp !== prop) {
-              let s = updateStyle(S, S.selection, prop, undefined);
-              s = updateStyle(s, S.selection, newProp, newVal);
-              update(s);
-            } else {
-              update(updateStyle(S, S.selection, prop, newVal));
-            }
-          },
-          () => update(updateStyle(S, S.selection, prop, undefined)),
-          'css-props'
-        ));
-      }
-
-      const add = document.createElement('span');
-      add.className = 'kv-add';
-      add.textContent = '+ Add style';
-      add.onclick = () => update(updateStyle(S, S.selection, 'color', '#000'));
-      wrapper.appendChild(add);
-    } else {
-      // Media-specific styles: contents of @--name
-      const mediaKey = `@${activeTab}`;
-      const mediaStyles = style[mediaKey] || {};
-
-      for (const [prop, val] of Object.entries(mediaStyles)) {
-        if (typeof val === 'object') continue;
-        wrapper.appendChild(kvRow(prop, String(val),
-          (newProp, newVal) => {
-            if (newProp !== prop) {
-              let s = updateMediaStyle(S, S.selection, activeTab, prop, undefined);
-              s = updateMediaStyle(s, S.selection, activeTab, newProp, newVal);
-              update(s);
-            } else {
-              update(updateMediaStyle(S, S.selection, activeTab, prop, newVal));
-            }
-          },
-          () => update(updateMediaStyle(S, S.selection, activeTab, prop, undefined)),
-          'css-props'
-        ));
-      }
-
-      const add = document.createElement('span');
-      add.className = 'kv-add';
-      add.textContent = `+ Add ${activeTab} style`;
-      add.onclick = () => update(updateMediaStyle(S, S.selection, activeTab, 'color', '#000'));
-      wrapper.appendChild(add);
-    }
-
+    renderStyleSidebar(wrapper, node, S.ui.activeMedia);
     return wrapper;
   });
 
@@ -2080,6 +1995,715 @@ function renderInspector(container) {
       return fields;
     });
   }
+}
+
+// ─── Style Sidebar (metadata-driven) ───────────────────────────────────────────
+
+const UNIT_RE = /^(-?[\d.]+)(px|rem|em|%|vw|vh|svw|svh|dvh|ms|s|fr|ch|ex|deg)?$/;
+
+function inferInputType(entry) {
+  if (entry.$shorthand === true)      return 'shorthand';
+  if (entry.format === 'color')       return 'color';
+  if (entry.$units !== undefined)     return 'number-unit';
+  if (entry.type === 'number')        return 'number';
+  if (Array.isArray(entry.enum))      return 'select';
+  if (Array.isArray(entry.examples))  return 'combobox';
+  return 'text';
+}
+
+function conditionPasses(cond, styles) {
+  const val = styles[cond.prop] ?? '';
+  if (cond.values.length === 0) return val !== '' && val !== 'initial';
+  return cond.values.includes(val);
+}
+
+function allConditionsPass(entry, styles) {
+  return (entry.$show ?? []).every(c => conditionPasses(c, styles));
+}
+
+function autoOpenSections(node, currentSections) {
+  const style = node.style || {};
+  const result = { ...currentSections };
+  for (const prop of Object.keys(style)) {
+    if (typeof style[prop] === 'object') continue;
+    const entry = cssMeta.$defs[prop];
+    const section = entry?.$section ?? 'other';
+    if (!result[section]) result[section] = true;
+  }
+  return result;
+}
+
+/** Get longhands for a shorthand property from css-meta */
+function getLonghands(shorthandProp) {
+  const result = [];
+  for (const [name, entry] of Object.entries(cssMeta.$defs)) {
+    if (entry.$shorthand === shorthandProp) result.push({ name, entry });
+  }
+  result.sort((a, b) => a.entry.$order - b.entry.$order);
+  return result;
+}
+
+function renderColorInput(value, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'style-input-color';
+
+  const swatch = document.createElement('input');
+  swatch.type = 'color';
+  try { swatch.value = value || '#000000'; } catch { swatch.value = '#000000'; }
+
+  const text = document.createElement('input');
+  text.type = 'text';
+  text.value = value || '';
+  text.placeholder = cssInitialMap.get('color') || '';
+
+  swatch.oninput = () => {
+    text.value = swatch.value;
+    onChange(swatch.value);
+  };
+
+  let debounce;
+  text.oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      const v = text.value.trim();
+      // Sync swatch if it's a valid hex color
+      if (/^#[0-9a-f]{6}$/i.test(v)) {
+        try { swatch.value = v; } catch {}
+      }
+      onChange(v);
+    }, 400);
+  };
+
+  wrap.appendChild(swatch);
+  wrap.appendChild(text);
+  return wrap;
+}
+
+function renderNumberUnitInput(entry, value, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'style-input-number-unit';
+  const units = entry.$units || [];
+  const keywords = entry.$keywords || [];
+  const strVal = String(value ?? '');
+  const match = strVal.match(UNIT_RE);
+  const isKeyword = !match && strVal !== '' && keywords.includes(strVal);
+
+  if (isKeyword && keywords.length > 0) {
+    // Keyword mode — render a select
+    const kwSelect = document.createElement('select');
+    kwSelect.className = 'style-input-keywords';
+    const blankOpt = document.createElement('option');
+    blankOpt.value = '';
+    blankOpt.textContent = '—';
+    kwSelect.appendChild(blankOpt);
+    for (const kw of keywords) {
+      const opt = document.createElement('option');
+      opt.value = kw;
+      opt.textContent = kw;
+      if (kw === strVal) opt.selected = true;
+      kwSelect.appendChild(opt);
+    }
+    // Add a "numeric" option to switch back
+    const numOpt = document.createElement('option');
+    numOpt.value = '__numeric__';
+    numOpt.textContent = '(numeric)';
+    kwSelect.appendChild(numOpt);
+
+    kwSelect.onchange = () => {
+      if (kwSelect.value === '__numeric__') {
+        onChange('0' + (units[0] || ''));
+      } else if (kwSelect.value === '') {
+        onChange('');
+      } else {
+        onChange(kwSelect.value);
+      }
+    };
+    wrap.appendChild(kwSelect);
+  } else {
+    // Number + unit mode
+    const numInput = document.createElement('input');
+    numInput.type = 'number';
+    numInput.value = match ? match[1] : (strVal === '' ? '' : strVal);
+    if (entry.minimum !== undefined) numInput.min = entry.minimum;
+    if (entry.maximum !== undefined) numInput.max = entry.maximum;
+    if (entry.type === 'number' || (entry.maximum !== undefined && entry.maximum <= 1)) {
+      numInput.step = '0.1';
+    }
+
+    const currentUnit = match ? (match[2] || '') : (units[0] || '');
+
+    let debounce;
+    const commit = () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        const n = numInput.value;
+        if (n === '') { onChange(''); return; }
+        if (units.length > 0) {
+          const u = unitSelect ? unitSelect.value : currentUnit;
+          onChange(n + u);
+        } else {
+          onChange(n);
+        }
+      }, 400);
+    };
+    numInput.oninput = commit;
+    wrap.appendChild(numInput);
+
+    let unitSelect = null;
+    if (units.length > 0) {
+      unitSelect = document.createElement('select');
+      for (const u of units) {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = u;
+        if (u === currentUnit) opt.selected = true;
+        unitSelect.appendChild(opt);
+      }
+      unitSelect.onchange = commit;
+      wrap.appendChild(unitSelect);
+    }
+
+    // Keywords switch button
+    if (keywords.length > 0) {
+      const kwSelect = document.createElement('select');
+      const blankOpt = document.createElement('option');
+      blankOpt.value = '';
+      blankOpt.textContent = '—';
+      kwSelect.appendChild(blankOpt);
+      for (const kw of keywords) {
+        const opt = document.createElement('option');
+        opt.value = kw;
+        opt.textContent = kw;
+        kwSelect.appendChild(opt);
+      }
+      kwSelect.onchange = () => {
+        if (kwSelect.value) onChange(kwSelect.value);
+        kwSelect.value = '';
+      };
+      wrap.appendChild(kwSelect);
+    }
+  }
+
+  return wrap;
+}
+
+function renderSelectInput(entry, value, onChange) {
+  const select = document.createElement('select');
+  select.className = 'field-input';
+  select.style.flex = '1';
+  select.style.minWidth = '0';
+
+  const blankOpt = document.createElement('option');
+  blankOpt.value = '';
+  blankOpt.textContent = '—';
+  select.appendChild(blankOpt);
+
+  const vals = entry.enum;
+  let found = false;
+  for (const v of vals) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v;
+    if (v === value) { opt.selected = true; found = true; }
+    select.appendChild(opt);
+  }
+  // If current value not in enum, add it
+  if (value && !found) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value;
+    opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  select.onchange = () => onChange(select.value);
+  return select;
+}
+
+function renderComboboxInput(entry, prop, value, onChange) {
+  const id = `style-dl-${prop}`;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'field-input';
+  input.style.flex = '1';
+  input.style.minWidth = '0';
+  input.value = value || '';
+  input.placeholder = cssInitialMap.get(prop) || '';
+  input.setAttribute('list', id);
+
+  const dl = document.createElement('datalist');
+  dl.id = id;
+  for (const ex of entry.examples) {
+    const opt = document.createElement('option');
+    opt.value = ex;
+    dl.appendChild(opt);
+  }
+
+  let debounce;
+  input.oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => onChange(input.value), 400);
+  };
+
+  const frag = document.createDocumentFragment();
+  frag.appendChild(dl);
+  frag.appendChild(input);
+  // Wrap in a span to return single element
+  const wrap = document.createElement('span');
+  wrap.style.display = 'contents';
+  wrap.appendChild(dl);
+  wrap.appendChild(input);
+  return wrap;
+}
+
+function renderNumberInput(entry, value, onChange) {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.className = 'field-input';
+  input.style.flex = '1';
+  input.style.minWidth = '0';
+  input.value = value ?? '';
+  if (entry.minimum !== undefined) input.min = entry.minimum;
+  if (entry.maximum !== undefined) input.max = entry.maximum;
+  if (entry.maximum !== undefined && entry.maximum <= 1) input.step = '0.1';
+
+  let debounce;
+  input.oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      if (input.value === '') onChange('');
+      else onChange(Number(input.value));
+    }, 400);
+  };
+  return input;
+}
+
+function renderTextInput(prop, value, onChange) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'field-input';
+  input.style.flex = '1';
+  input.style.minWidth = '0';
+  input.value = value || '';
+  input.placeholder = cssInitialMap.get(prop) || '';
+
+  let debounce;
+  input.oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => onChange(input.value), 400);
+  };
+  return input;
+}
+
+function renderStyleRow(entry, prop, value, onCommit, onDelete, isWarning) {
+  const row = document.createElement('div');
+  row.className = 'style-row' + (isWarning ? ' style-row--warning' : '');
+  row.dataset.prop = prop;
+
+  const label = document.createElement('span');
+  label.className = 'style-row-label';
+  label.textContent = prop;
+  label.title = prop;
+  row.appendChild(label);
+
+  const type = inferInputType(entry);
+  let widget;
+  switch (type) {
+    case 'color':
+      widget = renderColorInput(value, onCommit);
+      break;
+    case 'number-unit':
+      widget = renderNumberUnitInput(entry, value, onCommit);
+      break;
+    case 'number':
+      widget = renderNumberInput(entry, value, onCommit);
+      break;
+    case 'select':
+      widget = renderSelectInput(entry, value, onCommit);
+      break;
+    case 'combobox':
+      widget = renderComboboxInput(entry, prop, value, onCommit);
+      break;
+    default:
+      widget = renderTextInput(prop, value, onCommit);
+      break;
+  }
+  row.appendChild(widget);
+
+  const del = document.createElement('span');
+  del.className = 'style-row-delete';
+  del.textContent = '✕';
+  del.onclick = (e) => { e.stopPropagation(); onDelete(); };
+  row.appendChild(del);
+
+  return row;
+}
+
+function renderShorthandRow(shortProp, entry, style, commitFn, deleteFn) {
+  const frag = document.createDocumentFragment();
+  const longhands = getLonghands(shortProp);
+  const shortVal = style[shortProp];
+  const hasLonghands = longhands.some(l => style[l.name] !== undefined);
+  const isExpanded = S.ui.styleShorthands[shortProp] ?? hasLonghands;
+
+  // Shorthand header row
+  const row = document.createElement('div');
+  row.className = 'style-row';
+  row.dataset.prop = shortProp;
+
+  const label = document.createElement('span');
+  label.className = 'style-row-label';
+  label.textContent = shortProp;
+  label.title = shortProp;
+  row.appendChild(label);
+
+  // Shorthand value — plain text input
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'field-input';
+  input.style.flex = '1';
+  input.style.minWidth = '0';
+  input.value = shortVal || '';
+  if (!shortVal && hasLonghands) {
+    // Synthetic placeholder from longhands
+    input.placeholder = longhands.map(l => style[l.name] || '0').join(' ');
+  }
+
+  let debounce;
+  input.oninput = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      // Writing shorthand clears all longhands
+      let s = S;
+      for (const l of longhands) {
+        if (style[l.name] !== undefined) {
+          s = commitFn(s, l.name, undefined);
+        }
+      }
+      s = commitFn(s, shortProp, input.value || undefined);
+      update(s);
+    }, 400);
+  };
+  row.appendChild(input);
+
+  // Expand toggle
+  const toggle = document.createElement('span');
+  toggle.className = 'style-shorthand-toggle';
+  toggle.textContent = isExpanded ? '⌃' : '⌄';
+  toggle.onclick = (e) => {
+    e.stopPropagation();
+    S = { ...S, ui: { ...S.ui, styleShorthands: { ...S.ui.styleShorthands, [shortProp]: !isExpanded } } };
+    renderRightPanel();
+  };
+  row.appendChild(toggle);
+
+  // Delete button
+  const del = document.createElement('span');
+  del.className = 'style-row-delete';
+  del.textContent = '✕';
+  del.onclick = (e) => {
+    e.stopPropagation();
+    let s = S;
+    if (shortVal !== undefined) s = commitFn(s, shortProp, undefined);
+    for (const l of longhands) {
+      if (style[l.name] !== undefined) s = commitFn(s, l.name, undefined);
+    }
+    update(s);
+  };
+  row.appendChild(del);
+
+  frag.appendChild(row);
+
+  // Expanded longhand rows
+  if (isExpanded) {
+    for (const { name, entry: lEntry } of longhands) {
+      const lVal = style[name] ?? '';
+      const lRow = renderStyleRow(
+        lEntry, name, lVal,
+        (newVal) => {
+          update(commitFn(S, name, newVal || undefined));
+        },
+        () => update(commitFn(S, name, undefined))
+      );
+      lRow.classList.add('style-row--child');
+      frag.appendChild(lRow);
+    }
+  }
+
+  return frag;
+}
+
+function renderSectionAddControl(sectionKey, onAdd) {
+  const wrap = document.createElement('div');
+  wrap.className = 'style-add-input';
+  wrap.style.display = 'none';
+
+  const dlId = `style-add-dl-${sectionKey}`;
+  const dl = document.createElement('datalist');
+  dl.id = dlId;
+  for (const [name, entry] of Object.entries(cssMeta.$defs)) {
+    if ((entry.$section || 'other') === sectionKey && typeof entry.$shorthand !== 'string') {
+      const opt = document.createElement('option');
+      opt.value = name;
+      dl.appendChild(opt);
+    }
+  }
+  wrap.appendChild(dl);
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Property name…';
+  input.setAttribute('list', dlId);
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const prop = input.value.trim();
+      if (prop) {
+        onAdd(prop);
+        input.value = '';
+        wrap.style.display = 'none';
+      }
+    } else if (e.key === 'Escape') {
+      input.value = '';
+      wrap.style.display = 'none';
+    }
+  };
+  input.onblur = () => {
+    setTimeout(() => { wrap.style.display = 'none'; }, 150);
+  };
+  wrap.appendChild(input);
+
+  // Return wrap and a show function
+  wrap._show = () => {
+    wrap.style.display = 'flex';
+    input.focus();
+  };
+  return wrap;
+}
+
+function renderStyleSidebar(container, node, activeMediaTab) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'style-sidebar';
+  const style = node.style || {};
+  const { sizeBreakpoints } = parseMediaEntries(S.document.$media);
+  const mediaNames = sizeBreakpoints.map(bp => bp.name);
+  const activeTab = activeMediaTab;
+
+  // Media tabs (only if there are breakpoints)
+  if (mediaNames.length > 0) {
+    const tabs = document.createElement('div');
+    tabs.className = 'media-tabs';
+
+    const baseTab = document.createElement('div');
+    baseTab.className = `media-tab${activeTab === null ? ' active' : ''}`;
+    baseTab.textContent = 'Base';
+    baseTab.onclick = () => {
+      S = { ...S, ui: { ...S.ui, activeMedia: null } };
+      updateActivePanelHeaders();
+      renderRightPanel();
+    };
+    tabs.appendChild(baseTab);
+
+    for (const name of mediaNames) {
+      const tab = document.createElement('div');
+      tab.className = `media-tab${activeTab === name ? ' active' : ''}`;
+      tab.textContent = name;
+      tab.onclick = () => {
+        S = { ...S, ui: { ...S.ui, activeMedia: name } };
+        updateActivePanelHeaders();
+        renderRightPanel();
+      };
+      tabs.appendChild(tab);
+    }
+    wrapper.appendChild(tabs);
+  }
+
+  // Determine the active style object
+  let activeStyle;
+  let commitStyle;  // (state, prop, val) => newState
+  if (activeTab === null || mediaNames.length === 0) {
+    activeStyle = {};
+    // Collect base styles (non-object values)
+    for (const [p, v] of Object.entries(style)) {
+      if (typeof v !== 'object') activeStyle[p] = v;
+    }
+    commitStyle = (s, prop, val) => updateStyle(s, S.selection, prop, val);
+  } else {
+    const mediaKey = `@${activeTab}`;
+    activeStyle = style[mediaKey] || {};
+    commitStyle = (s, prop, val) => updateMediaStyle(s, S.selection, activeTab, prop, val);
+  }
+
+  // Auto-open sections that have properties
+  const newSections = autoOpenSections({ style: activeStyle }, S.ui.styleSections);
+  if (JSON.stringify(newSections) !== JSON.stringify(S.ui.styleSections)) {
+    S = { ...S, ui: { ...S.ui, styleSections: newSections } };
+  }
+
+  // Partition properties into sections
+  const sectionProps = {};
+  for (const sec of cssMeta.$sections) sectionProps[sec.key] = [];
+  const assigned = new Set();
+
+  // Sort known properties into sections
+  for (const [prop, entry] of Object.entries(cssMeta.$defs)) {
+    // Skip longhands (rendered inside their shorthand)
+    if (typeof entry.$shorthand === 'string') continue;
+    const sec = entry.$section || 'other';
+    sectionProps[sec].push({ prop, entry });
+  }
+  // Sort each section by $order
+  for (const sec of cssMeta.$sections) {
+    sectionProps[sec.key].sort((a, b) => a.entry.$order - b.entry.$order);
+  }
+
+  // Collect leftover "other" properties (on node but not in meta, or with string $shorthand that are standalone)
+  const otherProps = [];
+  for (const prop of Object.keys(activeStyle)) {
+    if (!cssMeta.$defs[prop]) {
+      otherProps.push(prop);
+      assigned.add(prop);
+    }
+  }
+
+  // Render sections
+  for (const sec of cssMeta.$sections) {
+    // Determine which props in this section are active (have values or meet conditions)
+    const entries = sectionProps[sec.key];
+    if (sec.key === 'other') {
+      // "Other" section: only render if there are unrecognized properties
+      if (otherProps.length === 0) continue;
+
+      const section = document.createElement('div');
+      section.className = 'style-section';
+      const isOpen = S.ui.styleSections[sec.key] ?? false;
+
+      const header = document.createElement('div');
+      header.className = `style-section-header${isOpen ? '' : ' collapsed'}`;
+      const collapse = document.createElement('span');
+      collapse.className = 'style-section-collapse';
+      collapse.textContent = '▼';
+      const labelEl = document.createElement('span');
+      labelEl.className = 'style-section-label';
+      labelEl.textContent = sec.label;
+      header.appendChild(collapse);
+      header.appendChild(labelEl);
+
+      const body = document.createElement('div');
+      body.className = `style-section-body${isOpen ? '' : ' hidden'}`;
+
+      header.onclick = () => {
+        const nowOpen = !header.classList.contains('collapsed');
+        header.classList.toggle('collapsed');
+        body.classList.toggle('hidden');
+        S = { ...S, ui: { ...S.ui, styleSections: { ...S.ui.styleSections, [sec.key]: !nowOpen } } };
+      };
+
+      for (const prop of otherProps) {
+        body.appendChild(kvRow(prop, String(activeStyle[prop]),
+          (newProp, newVal) => {
+            if (newProp !== prop) {
+              let s = commitStyle(S, prop, undefined);
+              s = commitStyle(s, newProp, newVal);
+              update(s);
+            } else {
+              update(commitStyle(S, prop, newVal));
+            }
+          },
+          () => update(commitStyle(S, prop, undefined)),
+          'css-props'
+        ));
+      }
+
+      section.appendChild(header);
+      section.appendChild(body);
+      wrapper.appendChild(section);
+      continue;
+    }
+
+    // Normal section
+    const section = document.createElement('div');
+    section.className = 'style-section';
+    section.dataset.key = sec.key;
+    const isOpen = S.ui.styleSections[sec.key] ?? false;
+
+    const header = document.createElement('div');
+    header.className = `style-section-header${isOpen ? '' : ' collapsed'}`;
+    const collapse = document.createElement('span');
+    collapse.className = 'style-section-collapse';
+    collapse.textContent = '▼';
+    const labelEl = document.createElement('span');
+    labelEl.className = 'style-section-label';
+    labelEl.textContent = sec.label;
+    header.appendChild(collapse);
+    header.appendChild(labelEl);
+
+    // Add button
+    const addBtn = document.createElement('button');
+    addBtn.className = 'style-section-add';
+    addBtn.textContent = '+';
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      addControl._show();
+    };
+    header.appendChild(addBtn);
+
+    const body = document.createElement('div');
+    body.className = `style-section-body${isOpen ? '' : ' hidden'}`;
+
+    header.onclick = (e) => {
+      if (e.target === addBtn) return;
+      const nowOpen = !header.classList.contains('collapsed');
+      header.classList.toggle('collapsed');
+      body.classList.toggle('hidden');
+      S = { ...S, ui: { ...S.ui, styleSections: { ...S.ui.styleSections, [sec.key]: !nowOpen } } };
+    };
+
+    // Render property rows
+    for (const { prop, entry } of entries) {
+      const val = activeStyle[prop];
+      const hasVal = val !== undefined;
+      const condMet = allConditionsPass(entry, activeStyle);
+      const type = inferInputType(entry);
+
+      // Skip if no value and conditions not met
+      if (!hasVal && !condMet) continue;
+
+      if (type === 'shorthand') {
+        // Shorthand row: render if shorthand or any longhands exist, or conditions met
+        const longhands = getLonghands(prop);
+        const hasAny = hasVal || longhands.some(l => activeStyle[l.name] !== undefined);
+        if (!hasAny && !condMet) continue;
+
+        body.appendChild(renderShorthandRow(prop, entry, activeStyle, commitStyle, () => {}));
+      } else {
+        // Warning if has value but conditions not met
+        const isWarning = hasVal && !condMet;
+
+        if (hasVal || condMet) {
+          body.appendChild(renderStyleRow(
+            entry, prop, val ?? '',
+            (newVal) => update(commitStyle(S, prop, newVal || undefined)),
+            () => update(commitStyle(S, prop, undefined)),
+            isWarning
+          ));
+        }
+      }
+    }
+
+    // Add control for this section
+    const addControl = renderSectionAddControl(sec.key, (prop) => {
+      const initial = cssInitialMap.get(prop) || '';
+      update(commitStyle(S, prop, initial || ''));
+    });
+    body.appendChild(addControl);
+
+    section.appendChild(header);
+    section.appendChild(body);
+    wrapper.appendChild(section);
+  }
+
+  container.appendChild(wrapper);
 }
 
 /** Collapsible inspector section */

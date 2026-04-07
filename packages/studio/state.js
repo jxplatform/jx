@@ -103,6 +103,8 @@ export function createState(doc) {
       zoom: 1,
       activeMedia: null,       // '--md' | null (base) — focused canvas/breakpoint
       featureToggles: {},      // { '--dark': true } — non-size media toggles
+      styleSections: {},       // { layout: true, ... } — section open/closed state
+      styleShorthands: {},     // { padding: true, ... } — shorthand expand/collapse state
     },
   };
 }
