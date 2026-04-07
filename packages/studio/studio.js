@@ -271,6 +271,7 @@ function update(newState) {
 
   renderRightPanel();
   renderOverlays();
+  updateForcedPseudoPreview();
   renderStatusbar();
 }
 
@@ -880,6 +881,50 @@ function getActivePanel() {
     if (p.mediaName === S.ui.activeMedia) return p;
   }
   return canvasPanels[0];
+}
+
+// ── Pseudo-state preview ──────────────────────────────────────────────────────
+// When a pseudo-selector (:hover, :focus, etc.) is active in the style sidebar,
+// force those styles onto the selected element so the user can see the result.
+
+let _forcedStyleTag = null;
+let _forcedAttrEl = null;
+
+function updateForcedPseudoPreview() {
+  // Clean up previous
+  if (_forcedStyleTag) { _forcedStyleTag.remove(); _forcedStyleTag = null; }
+  if (_forcedAttrEl) { _forcedAttrEl.removeAttribute("data-studio-forced"); _forcedAttrEl = null; }
+
+  const sel = S.ui?.activeSelector;
+  if (!sel || !sel.startsWith(":") || !S.selection) return;
+
+  const panel = getActivePanel();
+  if (!panel) return;
+  const el = findCanvasElement(S.selection, panel.canvas);
+  if (!el) return;
+
+  // Read the nested style object for this selector
+  const node = getNodeAtPath(S.document, S.selection);
+  if (!node?.style) return;
+  const activeTab = S.ui.activeMedia;
+  const ctx = activeTab ? (node.style[`@${activeTab}`] || {}) : node.style;
+  const rules = ctx[sel];
+  if (!rules || typeof rules !== "object") return;
+
+  // Build CSS text from the rules
+  const cssProps = Object.entries(rules)
+    .filter(([k]) => typeof rules[k] === "string" || typeof rules[k] === "number")
+    .map(([k, v]) => `${k.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}: ${v} !important`)
+    .join("; ");
+  if (!cssProps) return;
+
+  el.setAttribute("data-studio-forced", "1");
+  _forcedAttrEl = el;
+
+  const tag = document.createElement("style");
+  tag.textContent = `[data-studio-forced] { ${cssProps} }`;
+  document.head.appendChild(tag);
+  _forcedStyleTag = tag;
 }
 
 function drawOverlayBox(el, type, panel) {
@@ -2007,6 +2052,8 @@ function renderRightPanel() {
   if (tab === "properties") renderInspector(body);
   else if (tab === "style") renderStylePanel(body);
   else if (tab === "handlers") renderHandlersView(body);
+
+  updateForcedPseudoPreview();
 }
 
 // ─── Inspector ────────────────────────────────────────────────────────────────
@@ -2881,9 +2928,12 @@ function renderStyleSidebar(container, node, activeMediaTab, activeSelector) {
   }
   sel.appendChild(commonGroup);
 
-  // Custom selectors already on the node
+  // Custom selectors already on the node (+ activeSelector if not yet in any list)
   const commonSet = new Set(COMMON_SELECTORS);
   const extraSelectors = existingSelectors.filter((s) => !commonSet.has(s));
+  if (activeSelector && !commonSet.has(activeSelector) && !existingSet.has(activeSelector)) {
+    extraSelectors.unshift(activeSelector);
+  }
   if (extraSelectors.length > 0) {
     const extraGroup = document.createElement("optgroup");
     extraGroup.label = "Custom";
@@ -2915,7 +2965,10 @@ function renderStyleSidebar(container, node, activeMediaTab, activeSelector) {
       inp.placeholder = ":hover, .child, &.active, [attr]";
       selectorBar.appendChild(inp);
       inp.focus();
+      let done = false;
       const finish = (accept) => {
+        if (done) return;
+        done = true;
         const v = inp.value.trim();
         inp.remove();
         sel.style.display = "";
