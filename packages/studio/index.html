@@ -177,6 +177,14 @@
     .style-btn-group-overflow { min-width: 26px; height: 24px; padding: 0 2px; font: inherit; font-size: 11px; color: var(--fg-dim); background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer; text-align: center; }
     .style-btn-group-overflow:hover { color: var(--fg); }
 
+    /* ─── Grid section layout (Size panel) ─── */
+    .style-section-body--grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 6px 8px; }
+    .style-section-body--grid .style-add-input { grid-column: 1 / -1; }
+    .style-row--stacked { flex-direction: column; align-items: stretch; gap: 2px; position: relative; min-width: 0; overflow: hidden; }
+    .style-row--stacked .style-row-label { width: auto; font-size: 10px; }
+    .style-row--stacked .style-row-delete { position: absolute; top: 0; right: 0; }
+    .style-row--stacked .style-input-number-unit select { flex-shrink: 1; min-width: 0; }
+
     /* ─── Signals tab ────────────────────────────── */
     .signal-row { display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; border-left: 2px solid transparent; user-select: none; }
     .signal-row:hover { background: rgba(255,255,255,0.04); }

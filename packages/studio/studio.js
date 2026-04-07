@@ -2429,13 +2429,15 @@ function renderTextInput(prop, value, onChange) {
   return input;
 }
 
-function renderStyleRow(entry, prop, value, onCommit, onDelete, isWarning) {
+function renderStyleRow(entry, prop, value, onCommit, onDelete, isWarning, gridMode) {
   const type = inferInputType(entry);
   const row = document.createElement('div');
   row.className = 'style-row'
     + (isWarning ? ' style-row--warning' : '')
-    + (type === 'button-group' ? ' style-row--button-group' : '');
+    + (type === 'button-group' ? ' style-row--button-group' : '')
+    + (gridMode ? ' style-row--stacked' : '');
   row.dataset.prop = prop;
+  if (gridMode && entry.$span === 2) row.style.gridColumn = '1 / -1';
 
   const label = document.createElement('span');
   label.className = 'style-row-label';
@@ -2794,7 +2796,7 @@ function renderStyleSidebar(container, node, activeMediaTab) {
     header.appendChild(addBtn);
 
     const body = document.createElement('div');
-    body.className = `style-section-body${isOpen ? '' : ' hidden'}`;
+    body.className = `style-section-body${isOpen ? '' : ' hidden'}${sec.$layout === 'grid' ? ' style-section-body--grid' : ''}`;
 
     header.onclick = (e) => {
       if (e.target === addBtn) return;
@@ -2830,7 +2832,8 @@ function renderStyleSidebar(container, node, activeMediaTab) {
             entry, prop, val ?? '',
             (newVal) => update(commitStyle(S, prop, newVal || undefined)),
             () => update(commitStyle(S, prop, undefined)),
-            isWarning
+            isWarning,
+            sec.$layout === 'grid'
           ));
         }
       }
