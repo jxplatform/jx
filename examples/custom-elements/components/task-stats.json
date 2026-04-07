@@ -1,0 +1,48 @@
+{
+  "$schema": "../../../packages/schema/schema.json",
+  "$id": "TaskStats",
+  "tagName": "task-stats",
+
+  "$defs": {
+    "tasks": [],
+
+    "total": {
+      "$prototype": "Function",
+      "signal": true,
+      "body": "return $defs.tasks.length"
+    },
+
+    "done": {
+      "$prototype": "Function",
+      "signal": true,
+      "body": "return $defs.tasks.filter(t => t.done).length"
+    },
+
+    "remaining": {
+      "$prototype": "Function",
+      "signal": true,
+      "body": "return $defs.tasks.filter(t => !t.done).length"
+    }
+  },
+
+  "style": {
+    "display": "flex",
+    "justifyContent": "space-between",
+    "padding": "0.75em 1em",
+    "backgroundColor": "#f8f9fa",
+    "borderRadius": "0 0 8px 8px",
+    "fontSize": "0.85em",
+    "color": "#666"
+  },
+
+  "children": [
+    {
+      "tagName": "span",
+      "textContent": "${$defs.remaining} remaining"
+    },
+    {
+      "tagName": "span",
+      "textContent": "${$defs.done} / ${$defs.total} completed"
+    }
+  ]
+}

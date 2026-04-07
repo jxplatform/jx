@@ -32,6 +32,12 @@ export async function JSONsx(source, target = document.body, options) {
     ? new URL(source, location.href).href
     : location.href;
   const doc   = await resolve(source);
+
+  // Register custom elements declared in $elements (depth-first)
+  if (doc.$elements) {
+    await registerElements(doc.$elements, base);
+  }
+
   const $defs = await buildScope(doc, {}, base);
   target.appendChild(renderNode(doc, $defs, options));
   if (typeof $defs.onMount === 'function') $defs.onMount($defs);
@@ -245,13 +251,14 @@ async function resolveFunction(def, $defs, key, base) {
  * @type {Set<string>}
  */
 export const RESERVED_KEYS = new Set([
-  '$schema', '$id', '$defs', '$ref', '$props',
+  '$schema', '$id', '$defs', '$ref', '$props', '$elements',
   '$switch', '$prototype', '$src', '$export',
   '$media', '$map',
   'signal', 'timing', 'default', 'description',
   'body', 'arguments', 'name',
   'tagName', 'children', 'style', 'attributes',
   'items', 'map', 'filter', 'sort', 'cases',
+  'observedAttributes',
 ]);
 
 /**
@@ -273,6 +280,14 @@ export function renderNode(def, $defs, options) {
     }
   }
 
+  // Custom element with $props: set JS properties on the element instance
+  const tagName = def.tagName ?? 'div';
+  const isCustomEl = tagName.includes('-') && customElements.get(tagName);
+
+  if (def.$props && isCustomEl) {
+    return renderCustomElementWithProps(def, localDefs, options, path);
+  }
+
   if (def.$props) {
     const { $props, ...rest } = def;
     return renderNode(rest, mergeProps(def, localDefs), options);
@@ -280,7 +295,7 @@ export function renderNode(def, $defs, options) {
   if (def.$switch)                          return renderSwitch(def, localDefs, options);
   if (def.children?.$prototype === 'Array') return renderMappedArray(def, localDefs, options);
 
-  const el = document.createElement(def.tagName ?? 'div');
+  const el = document.createElement(tagName);
 
   if (options?.onNodeCreated) options.onNodeCreated(el, path, def);
 
@@ -313,13 +328,24 @@ function applyProperties(el, def, $defs) {
     if (RESERVED_KEYS.has(key)) continue;
     if (key.startsWith('$')) continue;   // scope bindings — handled in renderNode
 
-    if (key.startsWith('on') && isRefObj(val)) {
-      const handler = resolveRef(val.$ref, $defs);
-      if (typeof handler === 'function') {
-        const scope = $defs; // capture local scope for handler calls
-        el.addEventListener(key.slice(2), (e) => handler(scope, e));
+    if (key.startsWith('on')) {
+      // Event handler: $ref to a function
+      if (isRefObj(val)) {
+        const handler = resolveRef(val.$ref, $defs);
+        if (typeof handler === 'function') {
+          const scope = $defs;
+          el.addEventListener(key.slice(2), (e) => handler(scope, e));
+        }
+        continue;
       }
-      continue;
+      // Event handler: inline $prototype: "Function"
+      if (val && typeof val === 'object' && val.$prototype === 'Function' && val.body) {
+        const args = val.arguments ?? [];
+        const fn = new Function('$defs', ...args, val.body);
+        const scope = $defs;
+        el.addEventListener(key.slice(2), (e) => fn(scope, e));
+        continue;
+      }
     }
 
     bindProperty(el, key, val, $defs);
@@ -990,4 +1016,199 @@ export function toCSSText(rules) {
     .filter(([k]) => !isNestedSelector(k))
     .map(([p, v]) => `${camelToKebab(p)}: ${v}`)
     .join('; ');
+}
+
+// ─── Custom Element Registration ──────────────────────────────────────────────
+
+const _elementDefs = new Map();
+
+/**
+ * Resolve and register $elements entries (depth-first).
+ */
+async function registerElements(elements, base) {
+  for (const entry of elements) {
+    if (!isRefObj(entry)) continue;
+    const href = new URL(entry.$ref, base).href;
+    const doc = await resolve(href);
+    if (!doc.tagName || !doc.tagName.includes('-')) continue;
+    if (customElements.get(doc.tagName)) continue;
+
+    // Depth-first: register sub-dependencies first
+    if (doc.$elements) {
+      await registerElements(doc.$elements, href);
+    }
+
+    await defineElement(doc, href);
+  }
+}
+
+/**
+ * Register a custom element from a JSONsx document.
+ *
+ * @param {string|object} source - URL to .json file, or raw document object
+ * @param {string} [base] - Base URL for resolving $src imports
+ * @returns {Promise<void>}
+ */
+export async function defineElement(source, base) {
+  if (typeof source === 'string') {
+    base = new URL(source, base ?? location.href).href;
+    source = await resolve(source);
+  }
+  base = base ?? location.href;
+
+  const tagName = source.tagName;
+  if (!tagName || !tagName.includes('-')) {
+    throw new Error(`JSONsx defineElement: tagName "${tagName}" must contain a hyphen`);
+  }
+  if (customElements.get(tagName)) return;
+
+  // Register sub-dependencies first
+  if (source.$elements) {
+    await registerElements(source.$elements, base);
+  }
+
+  _elementDefs.set(tagName, { doc: source, base });
+
+  const def = source;
+  const observedAttrs = def.observedAttributes ?? [];
+
+  const ElementClass = class extends HTMLElement {
+    static get observedAttributes() { return observedAttrs; }
+
+    async connectedCallback() {
+      const $defs = await buildScope(def, {}, base);
+
+      // Merge $props set as JS properties by parent before connection
+      for (const key of Object.keys(def.$defs ?? {})) {
+        if (key in this && this[key] !== undefined) {
+          $defs[key] = this[key];
+        }
+      }
+      // Set up property getters/setters that forward into reactive state
+      for (const key of Object.keys(def.$defs ?? {})) {
+        if (!(key in HTMLElement.prototype)) {
+          Object.defineProperty(this, key, {
+            get: () => $defs[key],
+            set: (v) => { $defs[key] = v; },
+            configurable: true,
+          });
+        }
+      }
+
+      this._$defs = $defs;
+
+      // Capture light DOM children (for slot distribution) before rendering
+      const slottedChildren = Array.from(this.childNodes);
+      this.innerHTML = '';
+
+      // Render template into light DOM (once, not in effect — inner effects handle reactivity)
+      applyStyle(this, def.style ?? {}, $defs['$media'] ?? {}, $defs);
+      applyAttributes(this, def.attributes ?? {}, $defs);
+
+      const children = Array.isArray(def.children) ? def.children : [];
+      for (const childDef of children) {
+        this.appendChild(renderNode(childDef, $defs));
+      }
+
+      // Slot distribution (light DOM)
+      distributeSlots(this, slottedChildren);
+
+      // Lifecycle: onMount
+      if (typeof $defs.onMount === 'function') {
+        queueMicrotask(() => $defs.onMount($defs));
+      }
+    }
+
+    disconnectedCallback() {
+      if (typeof this._$defs?.onUnmount === 'function') {
+        this._$defs.onUnmount(this._$defs);
+      }
+    }
+
+    adoptedCallback() {
+      if (typeof this._$defs?.onAdopted === 'function') {
+        this._$defs.onAdopted(this._$defs);
+      }
+    }
+
+    attributeChangedCallback(name, oldVal, newVal) {
+      if (!this._$defs || oldVal === newVal) return;
+      const camelKey = name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      const current = this._$defs[camelKey];
+      if (typeof current === 'number')      this._$defs[camelKey] = Number(newVal);
+      else if (typeof current === 'boolean') this._$defs[camelKey] = newVal !== null && newVal !== 'false';
+      else                                   this._$defs[camelKey] = newVal;
+    }
+  };
+
+  customElements.define(tagName, ElementClass);
+}
+
+/**
+ * Render a registered custom element with $props (property-first interface).
+ */
+function renderCustomElementWithProps(def, $defs, options, path) {
+  const el = document.createElement(def.tagName);
+
+  if (options?.onNodeCreated) options.onNodeCreated(el, path, def);
+
+  // Set JS properties from $props (before connection)
+  for (const [key, val] of Object.entries(def.$props ?? {})) {
+    if (isRefObj(val)) {
+      const resolved = resolveRef(val.$ref, $defs);
+      el[key] = resolved;
+      // Reactive forwarding: re-set the property when the source changes
+      effect(() => { el[key] = resolveRef(val.$ref, $defs); });
+    } else if (isTemplateString(val)) {
+      effect(() => { el[key] = evaluateTemplate(val, $defs); });
+    } else {
+      el[key] = val;
+    }
+  }
+
+  // Apply host-level style and attributes from the usage site
+  applyStyle(el, def.style ?? {}, $defs['$media'] ?? {}, $defs);
+  applyAttributes(el, def.attributes ?? {}, $defs);
+
+  // Append slotted children
+  const children = Array.isArray(def.children) ? def.children : [];
+  for (let i = 0; i < children.length; i++) {
+    el.appendChild(renderNode(children[i], $defs, options));
+  }
+
+  return el;
+}
+
+/**
+ * Light DOM slot distribution.
+ */
+function distributeSlots(host, slottedChildren) {
+  if (slottedChildren.length === 0) return;
+
+  const slots = host.querySelectorAll('slot');
+  if (slots.length === 0) return;
+
+  const named = new Map();
+  const unnamed = [];
+
+  for (const child of slottedChildren) {
+    if (child.nodeType === Node.ELEMENT_NODE && child.getAttribute('slot')) {
+      const name = child.getAttribute('slot');
+      if (!named.has(name)) named.set(name, []);
+      named.get(name).push(child);
+    } else {
+      unnamed.push(child);
+    }
+  }
+
+  for (const slot of slots) {
+    const name = slot.getAttribute('name');
+    const matches = name ? (named.get(name) ?? []) : unnamed;
+    if (matches.length > 0) {
+      slot.innerHTML = '';
+      for (const child of matches) {
+        slot.appendChild(child);
+      }
+    }
+  }
 }

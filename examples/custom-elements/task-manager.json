@@ -1,0 +1,211 @@
+{
+  "$schema": "../../packages/schema/schema.json",
+  "$id": "TaskManager",
+  "tagName": "task-manager",
+
+  "$elements": [
+    { "$ref": "./components/task-item.json" },
+    { "$ref": "./components/task-stats.json" }
+  ],
+
+  "$defs": {
+    "tasks": [
+      { "id": 1, "text": "Read the JSONsx spec", "done": true },
+      { "id": 2, "text": "Build a custom element", "done": false },
+      { "id": 3, "text": "Ship to production", "done": false }
+    ],
+    "newTaskText": "",
+    "nextId": 4,
+    "filter": "all",
+
+    "addTask": {
+      "$prototype": "Function",
+      "body": "const text = $defs.newTaskText.trim(); if (!text) return; $defs.tasks.push({ id: $defs.nextId++, text, done: false }); $defs.newTaskText = ''"
+    },
+
+    "handleKeydown": {
+      "$prototype": "Function",
+      "arguments": ["$defs", "event"],
+      "body": "if (event.key === 'Enter') $defs.addTask($defs)"
+    },
+
+    "filteredTasks": {
+      "$prototype": "Function",
+      "signal": true,
+      "body": "const f = $defs.filter; if (f === 'active') return $defs.tasks.filter(t => !t.done); if (f === 'done') return $defs.tasks.filter(t => t.done); return $defs.tasks"
+    },
+
+    "clearDone": {
+      "$prototype": "Function",
+      "body": "$defs.tasks = $defs.tasks.filter(t => !t.done)"
+    }
+  },
+
+  "style": {
+    "display": "block",
+    "fontFamily": "system-ui, -apple-system, sans-serif",
+    "maxWidth": "480px",
+    "margin": "2rem auto",
+    "border": "1px solid #ddd",
+    "borderRadius": "8px",
+    "boxShadow": "0 2px 12px rgba(0,0,0,0.08)",
+    "overflow": "hidden"
+  },
+
+  "children": [
+    {
+      "tagName": "div",
+      "style": {
+        "padding": "1.25em 1em",
+        "backgroundColor": "#007bff",
+        "color": "white"
+      },
+      "children": [
+        {
+          "tagName": "h2",
+          "textContent": "Task Manager",
+          "style": { "margin": "0 0 0.75em", "fontSize": "1.3em", "fontWeight": "600" }
+        },
+        {
+          "tagName": "div",
+          "style": { "display": "flex", "gap": "0.5em" },
+          "children": [
+            {
+              "tagName": "input",
+              "attributes": { "type": "text", "placeholder": "Add a task..." },
+              "value": { "$ref": "#/$defs/newTaskText" },
+              "oninput": {
+                "$prototype": "Function",
+                "arguments": ["$defs", "event"],
+                "body": "$defs.newTaskText = event.target.value"
+              },
+              "onkeydown": { "$ref": "#/$defs/handleKeydown" },
+              "style": {
+                "flex": "1",
+                "padding": "0.5em 0.75em",
+                "border": "none",
+                "borderRadius": "4px",
+                "fontSize": "0.95em"
+              }
+            },
+            {
+              "tagName": "button",
+              "textContent": "Add",
+              "onclick": { "$ref": "#/$defs/addTask" },
+              "style": {
+                "padding": "0.5em 1.25em",
+                "border": "none",
+                "borderRadius": "4px",
+                "backgroundColor": "white",
+                "color": "#007bff",
+                "fontWeight": "600",
+                "cursor": "pointer",
+                ":hover": { "backgroundColor": "#e9ecef" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "tagName": "nav",
+      "style": { "display": "flex", "borderBottom": "1px solid #eee" },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "All",
+          "onclick": {
+            "$prototype": "Function",
+            "body": "$defs.filter = 'all'"
+          },
+          "style": {
+            "flex": "1", "padding": "0.6em", "border": "none", "cursor": "pointer",
+            "fontWeight": "${$defs.filter === 'all' ? 'bold' : 'normal'}",
+            "backgroundColor": "${$defs.filter === 'all' ? '#e7f1ff' : 'white'}",
+            "color": "${$defs.filter === 'all' ? '#007bff' : '#666'}"
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Active",
+          "onclick": {
+            "$prototype": "Function",
+            "body": "$defs.filter = 'active'"
+          },
+          "style": {
+            "flex": "1", "padding": "0.6em", "border": "none", "borderLeft": "1px solid #eee", "cursor": "pointer",
+            "fontWeight": "${$defs.filter === 'active' ? 'bold' : 'normal'}",
+            "backgroundColor": "${$defs.filter === 'active' ? '#e7f1ff' : 'white'}",
+            "color": "${$defs.filter === 'active' ? '#007bff' : '#666'}"
+          }
+        },
+        {
+          "tagName": "button",
+          "textContent": "Done",
+          "onclick": {
+            "$prototype": "Function",
+            "body": "$defs.filter = 'done'"
+          },
+          "style": {
+            "flex": "1", "padding": "0.6em", "border": "none", "borderLeft": "1px solid #eee", "cursor": "pointer",
+            "fontWeight": "${$defs.filter === 'done' ? 'bold' : 'normal'}",
+            "backgroundColor": "${$defs.filter === 'done' ? '#e7f1ff' : 'white'}",
+            "color": "${$defs.filter === 'done' ? '#007bff' : '#666'}"
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "div",
+      "style": { "backgroundColor": "white" },
+      "children": {
+        "$prototype": "Array",
+        "items": { "$ref": "#/$defs/filteredTasks" },
+        "map": {
+          "tagName": "task-item",
+          "$props": {
+            "task": { "$ref": "$map/item" },
+            "tasks": { "$ref": "#/$defs/tasks" }
+          }
+        }
+      }
+    },
+
+    {
+      "tagName": "div",
+      "style": {
+        "display": "flex",
+        "justifyContent": "flex-end",
+        "padding": "0.5em 1em",
+        "backgroundColor": "white",
+        "borderBottom": "1px solid #eee"
+      },
+      "children": [
+        {
+          "tagName": "button",
+          "textContent": "Clear completed",
+          "onclick": { "$ref": "#/$defs/clearDone" },
+          "style": {
+            "border": "1px solid #dee2e6",
+            "borderRadius": "4px",
+            "backgroundColor": "white",
+            "color": "#666",
+            "padding": "0.35em 0.75em",
+            "fontSize": "0.8em",
+            "cursor": "pointer",
+            ":hover": { "backgroundColor": "#f8f9fa" }
+          }
+        }
+      ]
+    },
+
+    {
+      "tagName": "task-stats",
+      "$props": {
+        "tasks": { "$ref": "#/$defs/tasks" }
+      }
+    }
+  ]
+}

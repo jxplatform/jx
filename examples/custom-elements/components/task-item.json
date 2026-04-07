@@ -1,0 +1,69 @@
+{
+  "$schema": "../../../packages/schema/schema.json",
+  "$id": "TaskItem",
+  "tagName": "task-item",
+
+  "$defs": {
+    "task": {},
+    "tasks": [],
+
+    "toggleDone": {
+      "$prototype": "Function",
+      "body": "const t = $defs.task; const idx = $defs.tasks.findIndex(x => x.id === t.id); if (idx >= 0) $defs.tasks[idx] = { ...t, done: !t.done }"
+    },
+
+    "removeTask": {
+      "$prototype": "Function",
+      "body": "const t = $defs.task; const idx = $defs.tasks.findIndex(x => x.id === t.id); if (idx >= 0) $defs.tasks.splice(idx, 1)"
+    }
+  },
+
+  "style": {
+    "display": "flex",
+    "alignItems": "center",
+    "gap": "0.75em",
+    "padding": "0.75em 1em",
+    "borderBottom": "1px solid #eee",
+    ":last-child": { "borderBottom": "none" }
+  },
+
+  "children": [
+    {
+      "tagName": "input",
+      "attributes": {
+        "type": "checkbox",
+        "checked": "${$defs.task.done ? '' : undefined}"
+      },
+      "onclick": { "$ref": "#/$defs/toggleDone" },
+      "style": {
+        "cursor": "pointer",
+        "width": "18px",
+        "height": "18px"
+      }
+    },
+    {
+      "tagName": "span",
+      "textContent": "${$defs.task.text}",
+      "style": {
+        "flex": "1",
+        "textDecoration": "${$defs.task.done ? 'line-through' : 'none'}",
+        "color": "${$defs.task.done ? '#999' : '#333'}"
+      }
+    },
+    {
+      "tagName": "button",
+      "textContent": "\u00d7",
+      "onclick": { "$ref": "#/$defs/removeTask" },
+      "style": {
+        "border": "none",
+        "background": "none",
+        "color": "#dc3545",
+        "fontSize": "1.25em",
+        "cursor": "pointer",
+        "padding": "0 0.25em",
+        "lineHeight": "1",
+        ":hover": { "color": "#a71d2a" }
+      }
+    }
+  ]
+}
