@@ -2590,6 +2590,14 @@ function renderTextInput(prop, value, onChange) {
   return input;
 }
 
+function camelToLabel(prop) {
+  return prop.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase());
+}
+
+function propLabel(entry, prop) {
+  return entry?.$label || camelToLabel(prop);
+}
+
 function renderStyleRow(entry, prop, value, onCommit, onDelete, isWarning, gridMode) {
   const type = inferInputType(entry);
   const hasVal = value !== undefined && value !== "";
@@ -2611,7 +2619,7 @@ function renderStyleRow(entry, prop, value, onCommit, onDelete, isWarning, gridM
     dot.onclick = (e) => { e.stopPropagation(); onDelete(); };
     label.appendChild(dot);
   }
-  const labelText = document.createTextNode(prop);
+  const labelText = document.createTextNode(propLabel(entry, prop));
   label.appendChild(labelText);
   label.title = prop;
   row.appendChild(label);
@@ -2675,7 +2683,7 @@ function renderShorthandRow(shortProp, entry, style, commitFn, deleteFn) {
     };
     label.appendChild(dot);
   }
-  label.appendChild(document.createTextNode(shortProp));
+  label.appendChild(document.createTextNode(propLabel(entry, shortProp)));
   label.title = shortProp;
   row.appendChild(label);
 
