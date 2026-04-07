@@ -225,7 +225,9 @@ async function resolveFunction(def, $defs, key, base) {
 
   if (def.body) {
     const args = def.arguments ?? [];
-    fn = new Function("$defs", ...args, def.body);
+    // If the caller already listed "$defs" as the first argument, don't prepend it again.
+    const params = args.length > 0 && args[0] === "$defs" ? args : ["$defs", ...args];
+    fn = new Function(...params, def.body);
     Object.defineProperty(fn, "name", { value: def.name ?? key, configurable: true });
   } else {
     // $src: dynamic import
@@ -379,7 +381,8 @@ function applyProperties(el, def, $defs) {
       // Event handler: inline $prototype: "Function"
       if (val && typeof val === "object" && val.$prototype === "Function" && val.body) {
         const args = val.arguments ?? [];
-        const fn = new Function("$defs", ...args, val.body);
+        const params = args.length > 0 && args[0] === "$defs" ? args : ["$defs", ...args];
+        const fn = new Function(...params, val.body);
         const scope = $defs;
         el.addEventListener(key.slice(2), (e) => fn(scope, e));
         continue;

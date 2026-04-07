@@ -1355,6 +1355,39 @@ function emitElementModule(doc, className, elementImports) {
   lines.push("        this.state[key] = this[key];");
   lines.push("      }");
   lines.push("    }");
+  // Apply host element styles (static and dynamic)
+  if (doc.style && typeof doc.style === "object") {
+    const staticStyles = [];
+    const dynamicStyles = [];
+    for (const [prop, value] of Object.entries(doc.style)) {
+      if (
+        prop.startsWith(":") || prop.startsWith(".") || prop.startsWith("&") ||
+        prop.startsWith("[") || prop.startsWith("@")
+      ) continue;
+      if (value === null || typeof value === "object") continue;
+      const cssProp = camelToKebab(prop);
+      if (typeof value === "string" && value.includes("${")) {
+        dynamicStyles.push([cssProp, value]);
+      } else {
+        staticStyles.push([cssProp, value]);
+      }
+    }
+    if (staticStyles.length > 0) {
+      for (const [cssProp, value] of staticStyles) {
+        lines.push(`    this.style['${cssProp}'] = ${JSON.stringify(value)};`);
+      }
+    }
+    if (dynamicStyles.length > 0) {
+      lines.push("    effect(() => {");
+      for (const [cssProp, value] of dynamicStyles) {
+        const expr = value.replace(/\$\{([^}]+)\}/g, (_, e) =>
+          "${" + e.replace(/\$defs\./g, "this.state.") + "}"
+        );
+        lines.push(`      this.style['${cssProp}'] = \`${expr}\`;`);
+      }
+      lines.push("    });");
+    }
+  }
   lines.push("    this.#dispose = effect(() => render(this.template(), this));");
   lines.push("  }");
   lines.push("");
