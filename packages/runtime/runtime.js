@@ -805,6 +805,12 @@ const EXTERNAL_RESERVED = new Set([
  */
 async function resolveExternalPrototype(def, $defs, key, base) {
   const src = def.$src;
+
+  // .class.json: schema-defined class
+  if (src.endsWith(".class.json")) {
+    return resolveClassJson(def, $defs, key, base);
+  }
+
   const exportName = def.$export ?? def.$prototype;
 
   let mod;
@@ -865,6 +871,115 @@ async function resolveExternalPrototype(def, $defs, key, base) {
   }
 
   return value;
+}
+
+/**
+ * Resolve a .class.json schema-defined class.
+ * Fetches the schema, follows $implementation if hybrid, or constructs dynamically if self-contained.
+ */
+async function resolveClassJson(def, $defs, key, base) {
+  const src = def.$src;
+  let classDef;
+
+  // Try fetching the .class.json file directly
+  try {
+    const url = base ? new URL(src, base).href : src;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    classDef = await res.json();
+  } catch {
+    // Fall back to dev proxy (server will handle .class.json resolution)
+    return resolveViaDevProxy(def, $defs, key, base);
+  }
+
+  // Hybrid mode: $implementation points to the real JS module
+  if (classDef.$implementation) {
+    const schemaUrl = base ? new URL(src, base).href : new URL(src, location.href).href;
+    const implSrc = new URL(classDef.$implementation, schemaUrl).href;
+    const implDef = { ...def, $src: implSrc };
+    // Use $export from def, or title from schema, or $prototype from def
+    if (!implDef.$export) implDef.$export = classDef.title ?? def.$prototype;
+    return resolveExternalPrototype(implDef, $defs, key, base);
+  }
+
+  // Self-contained: construct class dynamically from schema
+  const DynClass = classFromSchema(classDef);
+  const config = {};
+  for (const [k, v] of Object.entries(def)) {
+    if (!EXTERNAL_RESERVED.has(k)) config[k] = v;
+  }
+  const instance = new DynClass(config);
+
+  let value;
+  if (typeof instance.resolve === "function") {
+    value = await instance.resolve();
+  } else if ("value" in instance) {
+    value = instance.value;
+  } else {
+    value = instance;
+  }
+
+  if (def.signal) {
+    const state = ref(value);
+    if (typeof instance.subscribe === "function") {
+      instance.subscribe((newVal) => { state.value = newVal; });
+    }
+    return state;
+  }
+  return value;
+}
+
+/**
+ * Dynamically construct a class from a .class.json schema definition.
+ * Browser-side: maps private fields to _-prefixed public fields.
+ */
+function classFromSchema(classDef) {
+  const fields = classDef.$defs?.fields ?? {};
+  const ctor = classDef.$defs?.constructor;
+  const methods = classDef.$defs?.methods ?? {};
+
+  class DynClass {
+    constructor(config = {}) {
+      for (const [key, field] of Object.entries(fields)) {
+        const id = field.identifier ?? key;
+        const propName = field.access === "private" ? `_${id}` : id;
+        if (config[id] !== undefined) this[propName] = config[id];
+        else if (field.initializer !== undefined) this[propName] = field.initializer;
+        else if (field.default !== undefined) this[propName] = structuredClone(field.default);
+        else this[propName] = null;
+      }
+      if (ctor?.body) {
+        const bodyStr = Array.isArray(ctor.body) ? ctor.body.join("\n") : ctor.body;
+        new Function("config", bodyStr).call(this, config);
+      }
+    }
+  }
+
+  for (const [key, method] of Object.entries(methods)) {
+    const name = method.identifier ?? key;
+    const params = (method.parameters ?? []).map((p) => {
+      if (p.$ref) return p.$ref.split("/").pop();
+      return p.identifier ?? p.name ?? "arg";
+    });
+    const bodyStr = Array.isArray(method.body) ? method.body.join("\n") : (method.body ?? "");
+
+    if (method.role === "accessor") {
+      const descriptor = {};
+      if (method.getter) descriptor.get = new Function(method.getter.body);
+      if (method.setter) {
+        const sp = (method.setter.parameters ?? []).map((p) => p.$ref?.split("/").pop() ?? "v");
+        descriptor.set = new Function(...sp, method.setter.body);
+      }
+      Object.defineProperty(DynClass.prototype, name, { ...descriptor, configurable: true });
+    } else if (method.scope === "static") {
+      DynClass[name] = new Function(...params, bodyStr);
+    } else {
+      DynClass.prototype[name] = new Function(...params, bodyStr);
+    }
+  }
+
+  Object.defineProperty(DynClass, "name", { value: classDef.title, configurable: true });
+  return DynClass;
 }
 
 /**

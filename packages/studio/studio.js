@@ -2361,6 +2361,44 @@ function renderSchemaFields(container, schema, def, name) {
         }, 400);
       };
       row.appendChild(input);
+    } else if (ps.format === "json-schema") {
+      // Schema parameter — render as collapsible schema editor
+      const wrapper = document.createElement("div");
+      wrapper.className = "schema-param-editor";
+
+      const hasValue = currentValue && typeof currentValue === "object" && Object.keys(currentValue).length > 0;
+      const isRef = currentValue && typeof currentValue === "object" && currentValue.$ref;
+
+      if (hasValue && !isRef && currentValue.properties) {
+        // Render a preview of the schema's properties as chips
+        const preview = document.createElement("div");
+        preview.style.cssText = "display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px";
+        for (const k of Object.keys(currentValue.properties)) {
+          const chip = document.createElement("span");
+          chip.style.cssText = "background:var(--bg-alt);padding:1px 6px;border-radius:3px;font-size:10px;color:var(--fg-dim)";
+          const t = currentValue.properties[k].type ?? "any";
+          chip.textContent = `${k}: ${t}`;
+          preview.appendChild(chip);
+        }
+        wrapper.appendChild(preview);
+      }
+
+      const textarea = document.createElement("textarea");
+      textarea.className = "field-input";
+      textarea.style.minHeight = hasValue ? "80px" : "40px";
+      textarea.style.fontFamily = "monospace";
+      textarea.style.fontSize = "11px";
+      textarea.value = currentValue !== undefined ? JSON.stringify(currentValue, null, 2) : "";
+      textarea.placeholder = ps.description ?? "JSON Schema defining the data shape\u2026";
+      let debounce;
+      textarea.oninput = () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          try { update(updateDef(S, name, { [prop]: JSON.parse(textarea.value) })); } catch {}
+        }, 500);
+      };
+      wrapper.appendChild(textarea);
+      row.appendChild(wrapper);
     } else if (ps.type === "array" || ps.type === "object") {
       const textarea = document.createElement("textarea");
       textarea.className = "field-input";

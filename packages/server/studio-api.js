@@ -9,6 +9,7 @@
 
 import { resolve, relative, basename, dirname } from "node:path";
 import { readdir, stat, readFile, writeFile, rename, unlink, mkdir } from "node:fs/promises";
+import { readFileSync, existsSync } from "node:fs";
 
 function assertUnderRoot(filePath, root) {
   const rel = relative(root, filePath);
@@ -221,9 +222,33 @@ export async function handleStudioApi(req, url, root) {
       return Response.json({ schema: null, error: e.message });
     }
 
+    // .class.json: read and extract schema directly
+    if (moduleAbsPath.endsWith(".class.json")) {
+      try {
+        const content = readFileSync(moduleAbsPath, "utf8");
+        const classDef = JSON.parse(content);
+        return Response.json({ schema: extractStudioSchema(classDef, moduleAbsPath) });
+      } catch (e) {
+        return Response.json({ schema: null, error: e.message });
+      }
+    }
+
+    // Sibling .class.json auto-discovery: check for <ClassName>.class.json next to the .js module
+    const exportName = prototype || src;
+    const classJsonPath = resolve(dirname(moduleAbsPath), `${exportName}.class.json`);
+    if (existsSync(classJsonPath)) {
+      try {
+        const content = readFileSync(classJsonPath, "utf8");
+        const classDef = JSON.parse(content);
+        return Response.json({ schema: extractStudioSchema(classDef, classJsonPath) });
+      } catch {
+        // Fall through to JS module import
+      }
+    }
+
+    // Fallback: import JS module (backwards compat for classes without .class.json)
     try {
       const mod = await import(moduleAbsPath);
-      const exportName = prototype || src;
       const ExportedClass = mod[exportName] ?? mod.default?.[exportName];
       if (typeof ExportedClass !== "function") {
         return Response.json({ schema: null, error: `Export "${exportName}" not found` });
@@ -235,4 +260,78 @@ export async function handleStudioApi(req, url, root) {
   }
 
   return null;
+}
+
+/**
+ * Extract a studio-friendly schema from a .class.json definition.
+ * Transforms $defs.parameters and $defs.fields into the flat { description, properties, required }
+ * shape that renderSchemaFields() in the studio already consumes.
+ */
+function extractStudioSchema(classDef, classJsonPath) {
+  // If extends.$ref points to a parent, recursively merge
+  let parentSchema = null;
+  if (classDef.extends && typeof classDef.extends === "object" && classDef.extends.$ref) {
+    try {
+      const parentPath = resolve(dirname(classJsonPath), classDef.extends.$ref);
+      const parentContent = readFileSync(parentPath, "utf8");
+      const parentDef = JSON.parse(parentContent);
+      parentSchema = extractStudioSchema(parentDef, parentPath);
+    } catch {
+      // Parent not found — proceed without inheritance
+    }
+  }
+
+  const params = classDef.$defs?.parameters ?? {};
+  const fields = classDef.$defs?.fields ?? {};
+  const properties = {};
+  const required = [];
+
+  // Start with parent properties (child overrides)
+  if (parentSchema?.properties) {
+    Object.assign(properties, parentSchema.properties);
+  }
+  if (parentSchema?.required) {
+    required.push(...parentSchema.required);
+  }
+
+  // Build properties from parameters (constructor config surface)
+  for (const [key, param] of Object.entries(params)) {
+    const id = param.identifier ?? key;
+    const prop = {};
+    if (param.type && typeof param.type === "object") Object.assign(prop, param.type);
+    if (param.description) prop.description = param.description;
+    if (param.examples) prop.examples = param.examples;
+    if (param.format) prop.format = param.format;
+    properties[id] = prop;
+  }
+
+  // Build properties from fields (config-visible ones only)
+  for (const [key, field] of Object.entries(fields)) {
+    if (field.role !== "field") continue;
+    if (field.access === "private") continue;
+    const id = field.identifier ?? key;
+    const prop = {};
+    if (field.type && typeof field.type === "object") Object.assign(prop, field.type);
+    if (field.description) prop.description = field.description;
+    if (field.default !== undefined) prop.default = field.default;
+    if (field.initializer !== undefined && prop.default === undefined) prop.default = field.initializer;
+    if (field.examples) prop.examples = field.examples;
+    properties[id] = prop;
+  }
+
+  // Determine required from constructor parameters that have no default
+  const ctorParams = classDef.$defs?.constructor?.parameters ?? [];
+  const requiredSet = new Set(required);
+  for (const p of ctorParams) {
+    const name = p.$ref ? p.$ref.split("/").pop() : (p.identifier ?? p.name);
+    if (name && properties[name] && properties[name].default === undefined) {
+      requiredSet.add(name);
+    }
+  }
+
+  return {
+    description: classDef.description ?? classDef.title,
+    properties,
+    required: [...requiredSet],
+  };
 }

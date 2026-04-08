@@ -40,6 +40,13 @@ export const SCHEMA_KEYWORDS = new Set([
 // ─── Detection ────────────────────────────────────────────────────────────────
 
 /**
+ * Returns true if a $src path points to a .class.json schema-defined class.
+ */
+export function isClassJsonSrc(src) {
+  return typeof src === "string" && src.endsWith(".class.json");
+}
+
+/**
  * Returns true if an object contains only schema keywords (no `default`, no `$prototype`).
  */
 export function isSchemaOnly(obj) {

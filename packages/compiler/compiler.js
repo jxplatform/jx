@@ -58,6 +58,16 @@ export async function compile(sourcePath, opts = {}) {
   const raw =
     typeof sourcePath === "string" ? JSON.parse(readFileSync(sourcePath, "utf8")) : sourcePath;
 
+  // Route 0: .class.json schema-defined class → JS class module
+  if (raw.$prototype === "Class") {
+    const { compileClassJson } = await import("./compile-class.js");
+    const jsContent = compileClassJson(raw, opts);
+    const outputPath = typeof sourcePath === "string"
+      ? sourcePath.replace(/\.class\.json$/, ".js")
+      : `${raw.title}.js`;
+    return { html: "", files: [{ path: outputPath, content: jsContent }] };
+  }
+
   // Route 1: Fully static → plain HTML/CSS
   if (!isDynamic(raw)) {
     return compileStaticPage(raw, { title, reactivitySrc, litHtmlSrc });
