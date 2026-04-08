@@ -97,7 +97,7 @@ export async function compile(sourcePath, opts = {}) {
   }
 
   // Route 3: Dynamic with standard tagName → pre-rendered HTML + reactive bindings
-  return compileClient(raw, { title, reactivitySrc });
+  return compileClient(raw, { title, reactivitySrc, litHtmlSrc });
 }
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────

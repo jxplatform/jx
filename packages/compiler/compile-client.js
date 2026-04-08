@@ -2,12 +2,15 @@
  * compile-client.js — Pre-rendered HTML with reactive bindings
  *
  * Produces clean HTML with `data-bind` marker attributes and a small JS
- * bootstrapper using @vue/reactivity's `effect`.
+ * bootstrapper using @vue/reactivity's `effect` + `computed`.
+ *
+ * Signal functions become computed() on $defs for cross-referencing.
+ * Mapped arrays ($prototype: "Array") use lit-html for efficient rendering.
  *
  * Output pattern:
  *   HTML: pre-rendered with data-bind, :prop="key", @event="key"
- *   JS:   $defs (reactive state), bind (computed getters), on (event handlers)
- *         + hydrate() scan over [data-bind] elements
+ *   JS:   $defs (reactive state + computed signals),
+ *         bind (DOM getters), on (event handlers), hydrate()
  */
 
 import { camelToKebab, RESERVED_KEYS } from "@jsonsx/runtime";
@@ -22,22 +25,17 @@ import {
   escapeHtml,
   collectSrcImports,
   DEFAULT_REACTIVITY_SRC,
+  DEFAULT_LIT_HTML_SRC,
 } from "./shared.js";
 
 /**
  * Compile a JSONsx document to pre-rendered HTML + reactive JS module.
- *
- * @param {object} raw - Raw JSON document
- * @param {object} opts
- * @param {string} opts.title - HTML document title
- * @param {string} opts.reactivitySrc - CDN URL for @vue/reactivity
- * @param {string} [opts.modulePath='./app.js'] - Output JS module filename
- * @returns {{ html: string, files: Array<{ path: string, content: string }> }}
  */
 export function compileClient(raw, opts) {
   const {
     title,
     reactivitySrc = DEFAULT_REACTIVITY_SRC,
+    litHtmlSrc = DEFAULT_LIT_HTML_SRC,
     modulePath = "app.js",
   } = opts;
 
@@ -45,18 +43,17 @@ export function compileClient(raw, opts) {
   const styleBlock = compileStyles(raw, raw.$media ?? {});
 
   // Collectors for bindings and handlers
-  const counter = { t: 0, s: 0, h: 0, m: 0, sw: 0 };
+  const counter = { t: 0, s: 0, h: 0, m: 0, sw: 0, l: 0, needsLit: false };
   const bindings = new Map(); // key → expression string
   const handlers = new Map(); // key → { body, args }
 
-  // Classify $defs into state, bind, on, and init blocks
-  const stateEntries = [];   // [key, initValue]
-  const bindEntries = [];    // [key, bodyExpr]
-  const onEntries = [];      // [key, { args, body }]
-  const initBlocks = [];     // lines emitted after $defs for prototype init
+  // Classify $defs into state, computed, bind, on, and init blocks
+  const stateEntries = [];     // [key, initValue]  → reactive({...})
+  const computedEntries = [];  // [key, bodyExpr]   → $defs.key = computed(...)
+  const bindEntries = [];      // [key, bodyExpr]   → bind = {...}
+  const onEntries = [];        // [key, { args, body }] → on = {...}
+  const initBlocks = [];       // lines emitted after $defs for prototype init
 
-  // Collect $src imports for Function prototypes
-  const srcImports = collectSrcImports(raw);
   // Map $src path → Set of function names to import
   const srcImportMap = new Map();
 
@@ -65,8 +62,8 @@ export function compileClient(raw, opts) {
     if (def === null || typeof def !== "object" || Array.isArray(def)) {
       // Naked primitive or array → reactive state
       if (typeof def === "string" && isTemplateString(def)) {
-        stateEntries.push([key, null]); // template string needs computable default
-        bindEntries.push([key, `() => \`${def}\``]);
+        // Template string → computed on $defs so other computeds can ref it
+        computedEntries.push([key, '() => `' + def + '`']);
       } else {
         stateEntries.push([key, def]);
       }
@@ -76,19 +73,16 @@ export function compileClient(raw, opts) {
     // $prototype: "Function"
     if (def.$prototype === "Function") {
       if (def.$src) {
-        // External function — import from $src module
         if (!srcImportMap.has(def.$src)) srcImportMap.set(def.$src, new Set());
         srcImportMap.get(def.$src).add(key);
 
         if (def.signal) {
-          // Signal function from $src: wrap as bind entry calling imported fn
-          bindEntries.push([key, `() => { return ${key}($defs); }`]);
+          computedEntries.push([key, '() => { return ' + key + '($defs); }']);
         } else {
-          // Handler from $src: wrap as on entry (default includes event for handlers)
           onEntries.push([key, { imported: true, args: def.arguments ?? ["$defs", "event"] }]);
         }
       } else if (def.signal) {
-        bindEntries.push([key, `() => { ${def.body} }`]);
+        computedEntries.push([key, '() => { ' + def.body + ' }']);
       } else {
         onEntries.push([key, { args: def.arguments ?? ["$defs"], body: def.body }]);
       }
@@ -109,7 +103,7 @@ export function compileClient(raw, opts) {
       const storeName = def.$prototype === "LocalStorage" ? "localStorage" : "sessionStorage";
       const storageKey = def.key ?? key;
       const defaultVal = def.default ?? null;
-      stateEntries.push([key, null]); // placeholder, real init in initBlocks
+      stateEntries.push([key, null]);
       initBlocks.push(emitStorageInit(key, storeName, storageKey, defaultVal));
       continue;
     }
@@ -123,10 +117,8 @@ export function compileClient(raw, opts) {
 
     // $prototype: "Cookie"
     if (def.$prototype === "Cookie") {
-      const cookieName = def.name ?? key;
-      const defaultVal = def.default ?? null;
       stateEntries.push([key, null]);
-      initBlocks.push(emitCookieInit(key, cookieName, defaultVal));
+      initBlocks.push(emitCookieInit(key, def.name ?? key, def.default ?? null));
       continue;
     }
 
@@ -137,7 +129,7 @@ export function compileClient(raw, opts) {
   // Build HTML tree with data-bind markers
   const bodyContent = buildClientNode(raw, raw, context, bindings, handlers, counter);
 
-  // Merge inline-discovered bindings/handlers into the categorized lists
+  // Merge inline-discovered bindings/handlers
   for (const [key, expr] of bindings) {
     if (!bindEntries.some(([k]) => k === key)) {
       bindEntries.push([key, expr]);
@@ -151,8 +143,17 @@ export function compileClient(raw, opts) {
 
   // Generate the JS module
   const moduleContent = emitClientModule(
-    stateEntries, bindEntries, onEntries, initBlocks, srcImportMap, reactivitySrc,
+    stateEntries, computedEntries, bindEntries, onEntries,
+    initBlocks, srcImportMap, counter, reactivitySrc,
   );
+
+  // Build importmap entries
+  const importmapEntries = [
+    `      "@vue/reactivity": "${reactivitySrc}"`,
+  ];
+  if (counter.needsLit) {
+    importmapEntries.push(`      "lit-html": "${litHtmlSrc}"`);
+  }
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -163,7 +164,7 @@ export function compileClient(raw, opts) {
   <script type="importmap">
   {
     "imports": {
-      "@vue/reactivity": "${reactivitySrc}"
+${importmapEntries.join(",\n")}
     }
   }
   </script>
@@ -192,8 +193,7 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
   const bindAttrs = [];
   let needsBind = false;
 
-  // Check properties for dynamic values → generate binding markers
-  // textContent
+  // textContent bindings
   if (def.textContent !== undefined) {
     const tc = raw?.textContent ?? def.textContent;
     if (isRefObject(tc)) {
@@ -204,7 +204,7 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
     } else if (isTemplateString(tc)) {
       const key = `_t${counter.t++}`;
       bindAttrs.push(`:textContent="${key}"`);
-      bindings.set(key, `() => \`${tc}\``);
+      bindings.set(key, '() => `' + tc + '`');
       needsBind = true;
     }
   }
@@ -234,7 +234,7 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
       if (isTemplateString(val)) {
         const key = `_s${counter.s++}`;
         bindAttrs.push(`:style.${camelToKebab(prop)}="${key}"`);
-        bindings.set(key, `() => \`${val}\``);
+        bindings.set(key, '() => `' + val + '`');
         needsBind = true;
       }
     }
@@ -251,7 +251,7 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
       } else if (isTemplateString(val)) {
         const key = `_t${counter.t++}`;
         bindAttrs.push(`:attr.${attr}="${key}"`);
-        bindings.set(key, `() => \`${val}\``);
+        bindings.set(key, '() => `' + val + '`');
         needsBind = true;
       }
     }
@@ -271,7 +271,7 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
     } else if (isTemplateString(val)) {
       const key = `_t${counter.t++}`;
       bindAttrs.push(`:${prop}="${key}"`);
-      bindings.set(key, `() => \`${val}\``);
+      bindings.set(key, '() => `' + val + '`');
       needsBind = true;
     }
   }
@@ -285,11 +285,9 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
   let inner = "";
   const source = raw ?? def;
   if (source.textContent !== undefined && !needsBind) {
-    // Fully static textContent
     const value = resolveStaticValue(source.textContent, nextContext.scope);
     inner = value == null ? "" : escapeHtml(String(value));
   } else if (source.textContent !== undefined && needsBind) {
-    // Pre-render initial textContent value for SSR
     try {
       const value = resolveStaticValue(source.textContent, nextContext.scope);
       inner = value == null ? "" : escapeHtml(String(value));
@@ -298,6 +296,35 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
     }
   } else if (source.innerHTML) {
     inner = resolveStaticValue(source.innerHTML, nextContext.scope) ?? "";
+  } else if (source.children && typeof source.children === "object" && !Array.isArray(source.children) && source.children.$prototype === "Array") {
+    // ─── Mapped array → lit-html render binding ───
+    counter.needsLit = true;
+    const listKey = `_list${counter.l++}`;
+    const arrayDef = source.children;
+
+    // Resolve items source expression
+    let itemsExpr;
+    if (isRefObject(arrayDef.items)) {
+      const path = refToBindingKey(arrayDef.items.$ref);
+      itemsExpr = "$defs." + path;
+    } else {
+      itemsExpr = JSON.stringify(arrayDef.items);
+    }
+
+    // Compile the map template to a lit-html template string
+    const litTemplate = emitLitMapTemplate(arrayDef.map);
+    bindings.set(listKey, '() => (' + itemsExpr + ' ?? []).map((item, index) => html`' + litTemplate + '`)');
+
+    bindAttrs.push(`:render="${listKey}"`);
+    needsBind = true;
+    // Re-derive the data-bind/attr strings since we added to bindAttrs
+    const dataBindAttr2 = " data-bind";
+    const bindAttrStr2 = " " + bindAttrs.join(" ");
+    const selfClosing = new Set(["input", "br", "hr", "img", "meta", "link"]);
+    if (selfClosing.has(tag)) {
+      return `<${tag}${staticAttrs}${dataBindAttr2}${bindAttrStr2}>`;
+    }
+    return `<${tag}${staticAttrs}${dataBindAttr2}${bindAttrStr2}></${tag}>`;
   } else if (Array.isArray(source.children)) {
     const rawChildren = raw?.children;
     inner = source.children
@@ -317,17 +344,120 @@ function buildClientNode(def, raw, context, bindings, handlers, counter) {
   return `<${tag}${staticAttrs}${dataBindAttr}${bindAttrStr}>${inner}</${tag}>`;
 }
 
+// ─── Lit-html map template generation ─────────────────────────────────────────
+
+/**
+ * Compile a map definition to a lit-html template string.
+ * Converts $map.item → item, $map.index → index.
+ */
+function emitLitMapTemplate(def) {
+  if (!def) return "";
+  const tag = def.tagName ?? "div";
+  let attrs = "";
+
+  if (def.id) attrs += ' id="' + def.id + '"';
+  if (def.className) attrs += ' class="' + mapRefsToLit(def.className) + '"';
+
+  // attributes object
+  if (def.attributes && typeof def.attributes === "object") {
+    for (const [k, v] of Object.entries(def.attributes)) {
+      if (typeof v === "string" && isTemplateString(v)) {
+        attrs += " " + k + '="' + mapRefsToLit(v) + '"';
+      } else {
+        attrs += " " + k + '="' + escapeHtml(String(v)) + '"';
+      }
+    }
+  }
+
+  // style → inline CSS
+  if (def.style && typeof def.style === "object") {
+    const parts = [];
+    for (const [k, v] of Object.entries(def.style)) {
+      if (k.startsWith(":") || k.startsWith(".") || k.startsWith("&") ||
+          k.startsWith("[") || k.startsWith("@")) continue;
+      if (v === null || typeof v === "object") continue;
+      const cssProp = camelToKebab(k);
+      if (isTemplateString(String(v))) {
+        parts.push(cssProp + ": " + mapRefsToLit(String(v)));
+      } else {
+        parts.push(cssProp + ": " + v);
+      }
+    }
+    if (parts.length > 0) {
+      attrs += ' style="' + parts.join("; ") + '"';
+    }
+  }
+
+  // Event handlers in map template
+  for (const [prop, val] of Object.entries(def)) {
+    if (!prop.startsWith("on") || prop === "observedAttributes") continue;
+    const eventName = prop.slice(2).toLowerCase();
+    if (isRefObject(val)) {
+      const key = refToBindingKey(val.$ref);
+      attrs += " @" + eventName + "=${(e) => { $defs.$map = { item, index }; on." + key + "(e); }}";
+    } else if (val && typeof val === "object" && val.$prototype === "Function") {
+      const body = mapRefsToLit(val.body);
+      attrs += " @" + eventName + "=${(e) => { " + body + " }}";
+    }
+  }
+
+  // Non-reserved properties that render as attributes
+  if (def.contentEditable) {
+    attrs += ' contenteditable="' + def.contentEditable + '"';
+  }
+
+  // Inner content
+  let inner = "";
+  if (def.textContent !== undefined) {
+    const tc = String(def.textContent);
+    if (isTemplateString(tc)) {
+      inner = mapRefsToLit(tc);
+    } else if (isRefObject(def.textContent)) {
+      const path = refToBindingKey(def.textContent.$ref);
+      inner = "${$defs." + path + "}";
+    } else {
+      inner = escapeHtml(tc);
+    }
+  } else if (def.innerHTML) {
+    inner = mapRefsToLit(String(def.innerHTML));
+  } else if (Array.isArray(def.children)) {
+    inner = "\n      " + def.children.map(c => emitLitMapTemplate(c)).join("\n      ") + "\n    ";
+  }
+
+  const voidTags = new Set(["input", "br", "hr", "img", "meta", "link"]);
+  if (voidTags.has(tag)) return "<" + tag + attrs + ">";
+  return "<" + tag + attrs + ">" + inner + "</" + tag + ">";
+}
+
+/**
+ * Replace $map references: $map.item → item, $map.index → index
+ */
+function mapRefsToLit(str) {
+  return str.replace(/\$map\./g, "");
+}
+
 // ─── JS module generation ─────────────────────────────────────────────────────
 
-function emitClientModule(stateEntries, bindEntries, onEntries, initBlocks, srcImportMap, reactivitySrc) {
+function emitClientModule(stateEntries, computedEntries, bindEntries, onEntries, initBlocks, srcImportMap, counter, reactivitySrc) {
   const lines = [];
+  const needsLit = counter.needsLit;
+  const needsComputed = computedEntries.length > 0;
 
   lines.push("// Generated by @jsonsx/compiler — do not edit manually");
-  lines.push(`import { reactive, effect } from '@vue/reactivity';`);
+
+  // Reactivity imports
+  const reactivityImports = ["reactive", "effect"];
+  if (needsComputed) reactivityImports.push("computed");
+  lines.push("import { " + reactivityImports.join(", ") + " } from '@vue/reactivity';");
+
+  // lit-html imports (only when arrays are present)
+  if (needsLit) {
+    lines.push("import { html, render } from 'lit-html';");
+  }
 
   // $src imports
   for (const [src, names] of srcImportMap) {
-    lines.push(`import { ${[...names].join(", ")} } from '${src}';`);
+    lines.push("import { " + [...names].join(", ") + " } from '" + src + "';");
   }
 
   lines.push("");
@@ -335,7 +465,7 @@ function emitClientModule(stateEntries, bindEntries, onEntries, initBlocks, srcI
   // $defs — reactive state
   lines.push("const $defs = reactive({");
   for (const [key, val] of stateEntries) {
-    lines.push(`  ${key}: ${JSON.stringify(val)},`);
+    lines.push("  " + key + ": " + JSON.stringify(val) + ",");
   }
   lines.push("});");
   lines.push("");
@@ -348,11 +478,19 @@ function emitClientModule(stateEntries, bindEntries, onEntries, initBlocks, srcI
     lines.push("");
   }
 
-  // bind — computed getters
+  // Computed signals on $defs
+  if (computedEntries.length > 0) {
+    for (const [key, expr] of computedEntries) {
+      lines.push("$defs." + key + " = computed(" + expr + ");");
+    }
+    lines.push("");
+  }
+
+  // bind — DOM getters
   if (bindEntries.length > 0) {
     lines.push("const bind = {");
     for (const [key, expr] of bindEntries) {
-      lines.push(`  ${key}: ${expr},`);
+      lines.push("  " + key + ": " + expr + ",");
     }
     lines.push("};");
   } else {
@@ -365,20 +503,13 @@ function emitClientModule(stateEntries, bindEntries, onEntries, initBlocks, srcI
     lines.push("const on = {");
     for (const [key, def] of onEntries) {
       if (def.imported) {
-        // Imported from $src — already in scope via import statement
         const argNames = def.args ?? ["$defs"];
-        // Map declared params to actual values: $defs → $defs, event/e → e
-        const callArgs = argNames.map(a =>
-          a === "$defs" ? "$defs" : "e"
-        ).join(", ");
-        lines.push(`  ${key}: (e) => { ${key}(${callArgs}); },`);
+        const callArgs = argNames.map(a => a === "$defs" ? "$defs" : "e").join(", ");
+        lines.push("  " + key + ": (e) => { " + key + "(" + callArgs + "); },");
       } else {
         const argNames = def.args ?? ["$defs"];
-        // Map declared params to actual values
-        const callArgs = argNames.map(a =>
-          a === "$defs" ? "$defs" : "e"
-        ).join(", ");
-        lines.push(`  ${key}: (e) => { const fn = (${argNames.join(", ")}) => { ${def.body} }; fn(${callArgs}); },`);
+        const callArgs = argNames.map(a => a === "$defs" ? "$defs" : "e").join(", ");
+        lines.push("  " + key + ": (e) => { const fn = (" + argNames.join(", ") + ") => { " + def.body + " }; fn(" + callArgs + "); },");
       }
     }
     lines.push("};");
@@ -394,7 +525,13 @@ function emitClientModule(stateEntries, bindEntries, onEntries, initBlocks, srcI
   lines.push("      if (a.name.startsWith(':')) {");
   lines.push("        const parts = a.name.slice(1).split('.');");
   lines.push("        const key = a.value;");
-  lines.push("        if (parts[0] === 'style' && parts.length > 1) {");
+  if (needsLit) {
+    lines.push("        if (parts[0] === 'render') {");
+    lines.push("          effect(() => { render(bind[key](), el); });");
+    lines.push("        } else if (parts[0] === 'style' && parts.length > 1) {");
+  } else {
+    lines.push("        if (parts[0] === 'style' && parts.length > 1) {");
+  }
   lines.push("          effect(() => { el.style[parts[1]] = bind[key](); });");
   lines.push("        } else if (parts[0] === 'attr' && parts.length > 1) {");
   lines.push("          effect(() => { el.setAttribute(parts[1], bind[key]()); });");
@@ -421,75 +558,69 @@ function emitRequestInit(key, def) {
   const method = def.method ?? "GET";
   const isTemplateUrl = isTemplateString(url);
 
-  const lines = [];
   if (def.manual) {
-    // manual: true — don't auto-fetch, leave as null
-    return `// ${key}: manual Request — fetch triggered by user action`;
+    return "// " + key + ": manual Request — fetch triggered by user action";
   }
 
-  lines.push(`// ${key}: auto-fetch from ${isTemplateUrl ? "(dynamic URL)" : url}`);
-  lines.push(`effect(() => {`);
+  const lines = [];
+  lines.push("// " + key + ": auto-fetch from " + (isTemplateUrl ? "(dynamic URL)" : url));
+  lines.push("effect(() => {");
 
-  // Resolve URL
   if (isTemplateUrl) {
-    lines.push(`  const url = \`${url}\`;`);
-    lines.push(`  if (!url || url === "undefined" || url.includes("undefined")) return;`);
+    lines.push("  const url = `" + url + "`;");
+    lines.push('  if (!url || url === "undefined" || url.includes("undefined")) return;');
   } else {
-    lines.push(`  const url = ${JSON.stringify(url)};`);
+    lines.push("  const url = " + JSON.stringify(url) + ";");
   }
 
-  // Build fetch options
   const fetchOpts = [];
-  if (method !== "GET") fetchOpts.push(`method: ${JSON.stringify(method)}`);
-  if (def.headers) fetchOpts.push(`headers: ${JSON.stringify(def.headers)}`);
+  if (method !== "GET") fetchOpts.push("method: " + JSON.stringify(method));
+  if (def.headers) fetchOpts.push("headers: " + JSON.stringify(def.headers));
   if (def.body) {
     const bodyStr = typeof def.body === "object" ? JSON.stringify(JSON.stringify(def.body)) : JSON.stringify(def.body);
-    fetchOpts.push(`body: ${bodyStr}`);
+    fetchOpts.push("body: " + bodyStr);
   }
 
-  const optsStr = fetchOpts.length > 0 ? `, { ${fetchOpts.join(", ")} }` : "";
-  lines.push(`  fetch(url${optsStr})`);
-  lines.push(`    .then(r => r.ok ? r.json() : Promise.reject(r.statusText))`);
-  lines.push(`    .then(d => { $defs.${key} = d; })`);
-  lines.push(`    .catch(e => { $defs.${key} = { error: String(e) }; });`);
-  lines.push(`});`);
+  const optsStr = fetchOpts.length > 0 ? ", { " + fetchOpts.join(", ") + " }" : "";
+  lines.push("  fetch(url" + optsStr + ")");
+  lines.push("    .then(r => r.ok ? r.json() : Promise.reject(r.statusText))");
+  lines.push("    .then(d => { $defs." + key + " = d; })");
+  lines.push("    .catch(e => { $defs." + key + " = { error: String(e) }; });");
+  lines.push("});");
 
   return lines.join("\n");
 }
 
 function emitStorageInit(key, storeName, storageKey, defaultVal) {
   const lines = [];
-  lines.push(`// ${key}: ${storeName} (key: "${storageKey}")`);
-  lines.push(`try {`);
-  lines.push(`  const _s = ${storeName}.getItem(${JSON.stringify(storageKey)});`);
-  lines.push(`  $defs.${key} = _s !== null ? JSON.parse(_s) : ${JSON.stringify(defaultVal)};`);
-  lines.push(`} catch { $defs.${key} = ${JSON.stringify(defaultVal)}; }`);
-  lines.push(`effect(() => {`);
-  lines.push(`  const v = $defs.${key};`);
-  lines.push(`  try {`);
-  lines.push(`    if (v === null) ${storeName}.removeItem(${JSON.stringify(storageKey)});`);
-  lines.push(`    else ${storeName}.setItem(${JSON.stringify(storageKey)}, JSON.stringify(v));`);
-  lines.push(`  } catch {}`);
-  lines.push(`});`);
+  lines.push("// " + key + ": " + storeName + ' (key: "' + storageKey + '")');
+  lines.push("try {");
+  lines.push("  const _s = " + storeName + ".getItem(" + JSON.stringify(storageKey) + ");");
+  lines.push("  $defs." + key + " = _s !== null ? JSON.parse(_s) : " + JSON.stringify(defaultVal) + ";");
+  lines.push("} catch { $defs." + key + " = " + JSON.stringify(defaultVal) + "; }");
+  lines.push("effect(() => {");
+  lines.push("  const v = $defs." + key + ";");
+  lines.push("  try {");
+  lines.push("    if (v === null) " + storeName + ".removeItem(" + JSON.stringify(storageKey) + ");");
+  lines.push("    else " + storeName + ".setItem(" + JSON.stringify(storageKey) + ", JSON.stringify(v));");
+  lines.push("  } catch {}");
+  lines.push("});");
   return lines.join("\n");
 }
 
 function emitCookieInit(key, cookieName, defaultVal) {
   const lines = [];
-  lines.push(`// ${key}: Cookie (name: "${cookieName}")`);
-  lines.push(`{`);
-  lines.push(`  const _m = document.cookie.match(new RegExp("(?:^|; )${cookieName}=([^;]*)"));`);
-  lines.push(`  try { $defs.${key} = _m ? JSON.parse(decodeURIComponent(_m[1])) : ${JSON.stringify(defaultVal)}; }`);
-  lines.push(`  catch { $defs.${key} = _m ? _m[1] : ${JSON.stringify(defaultVal)}; }`);
-  lines.push(`}`);
+  lines.push("// " + key + ': Cookie (name: "' + cookieName + '")');
+  lines.push("{");
+  lines.push('  const _m = document.cookie.match(new RegExp("(?:^|; )' + cookieName + '=([^;]*)"));');
+  lines.push("  try { $defs." + key + " = _m ? JSON.parse(decodeURIComponent(_m[1])) : " + JSON.stringify(defaultVal) + "; }");
+  lines.push("  catch { $defs." + key + " = _m ? _m[1] : " + JSON.stringify(defaultVal) + "; }");
+  lines.push("}");
   return lines.join("\n");
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Convert a $ref string to a binding key name.
- */
 function refToBindingKey(ref) {
   if (ref.startsWith("#/$defs/")) {
     return ref.slice("#/$defs/".length).replace(/\//g, "_");
@@ -497,16 +628,13 @@ function refToBindingKey(ref) {
   return ref.replace(/\//g, "_");
 }
 
-/**
- * Add a binding for a $ref if not already present.
- */
 function addRefBinding(bindings, key, ref) {
   if (bindings.has(key)) return;
   if (ref.startsWith("#/$defs/")) {
     const path = ref.slice("#/$defs/".length);
     const parts = path.split("/");
-    bindings.set(key, `() => $defs.${parts.join(".")}`);
+    bindings.set(key, "() => $defs." + parts.join("."));
   } else {
-    bindings.set(key, `() => $defs.${ref}`);
+    bindings.set(key, "() => $defs." + ref);
   }
 }
