@@ -140,6 +140,9 @@ let sourceMode = false;
 /** Active Monaco editor instance (or null when in canvas mode) */
 let monacoEditor = null;
 
+/** Active function editor Monaco instance (or null) */
+let functionEditor = null;
+
 /** Cached $defs scope from last runtime render */
 let liveScope = null;
 
@@ -152,7 +155,7 @@ function stripEventHandlers(node) {
   if (Array.isArray(node)) return node.map(stripEventHandlers);
   const out = {};
   for (const [k, v] of Object.entries(node)) {
-    if (k.startsWith("on") && typeof v === "object" && v?.$ref) continue;
+    if (k.startsWith("on") && typeof v === "object" && (v?.$ref || v?.$prototype === "Function")) continue;
     if (k === "children") {
       out.children = Array.isArray(v) ? v.map(stripEventHandlers) : stripEventHandlers(v);
     } else if (k === "cases" && typeof v === "object") {
@@ -242,6 +245,7 @@ const EMPTY_DOC = {
 };
 
 S = createState(structuredClone(EMPTY_DOC));
+registerFunctionCompletions();
 render();
 
 // ─── Render loop ──────────────────────────────────────────────────────────────
@@ -341,6 +345,18 @@ function applyCanvasStyle(el, styleDef, activeBreakpoints, featureToggles) {
 // ─── Canvas ───────────────────────────────────────────────────────────────────
 
 function renderCanvas() {
+  // Function editor mode: editing a function body in Monaco (JS)
+  if (S.ui.editingFunction) {
+    renderFunctionEditor();
+    return;
+  }
+
+  // Dispose function editor if switching away
+  if (functionEditor) {
+    functionEditor.dispose();
+    functionEditor = null;
+  }
+
   // Source mode: update existing Monaco editor without recreating
   if (sourceMode && monacoEditor) {
     const jsonStr = JSON.stringify(S.document, null, 2);
@@ -552,13 +568,13 @@ const DEF_TEMPLATES = {
   set: { signal: true, $prototype: "Set", default: [] },
   map: { signal: true, $prototype: "Map", default: {} },
   formData: { signal: true, $prototype: "FormData", fields: {} },
-  handler: { $handler: true },
+  function: { $prototype: "Function", body: "", arguments: [] },
 };
 
 /** Classify a $defs entry into a category string. */
 function defCategory(def) {
   if (!def) return "state";
-  if (def.$handler) return "handler";
+  if (def.$handler || def.$prototype === "Function") return "function";
   if (def.$compute) return "computed";
   if (def.$prototype) return "data";
   return "state";
@@ -567,7 +583,7 @@ function defCategory(def) {
 /** Badge label for a def category. */
 function defBadgeLabel(def) {
   if (!def) return "S";
-  if (def.$handler) return "H";
+  if (def.$handler || def.$prototype === "Function") return "F";
   if (def.$compute) return "C";
   if (def.$prototype) return def.$prototype.charAt(0);
   return "S";
@@ -576,7 +592,12 @@ function defBadgeLabel(def) {
 /** Hint text for a signal row. */
 function defHint(name, def) {
   if (!def) return "";
-  if (def.$handler) return "handler";
+  if (def.$prototype === "Function") {
+    if (def.body) return def.body.length > 20 ? def.body.slice(0, 20) + "..." : def.body;
+    if (def.$src) return def.$src;
+    return "function";
+  }
+  if (def.$handler) return "handler (legacy)";
   if (def.$compute)
     return "=" + (def.$compute.length > 20 ? def.$compute.slice(0, 20) + "..." : def.$compute);
   if (def.$prototype === "Request") return def.method + " " + (def.url || "").slice(0, 20);
@@ -1181,7 +1202,7 @@ function renderLeftPanel() {
   // Tabs
   const tabs = document.createElement("div");
   tabs.className = "panel-tabs";
-  for (const t of ["layers", "blocks", "signals"]) {
+  for (const t of ["layers", "blocks", "state"]) {
     const btn = document.createElement("div");
     btn.className = `panel-tab${t === tab ? " active" : ""}`;
     btn.textContent = t;
@@ -1199,7 +1220,7 @@ function renderLeftPanel() {
 
   if (tab === "layers") renderLayers(body);
   else if (tab === "blocks") renderBlocks(body);
-  else renderSignals(body);
+  else if (tab === "state") renderSignals(body);
 }
 
 function renderLayers(container) {
@@ -1608,7 +1629,7 @@ function renderSignals(container) {
   const entries = Object.entries(defs);
 
   // Group by category
-  const groups = { state: [], computed: [], data: [], handler: [] };
+  const groups = { state: [], computed: [], data: [], function: [] };
   for (const [name, def] of entries) {
     groups[defCategory(def)].push([name, def]);
   }
@@ -1617,7 +1638,7 @@ function renderSignals(container) {
     { key: "state", label: "State", items: groups.state },
     { key: "computed", label: "Computed", items: groups.computed },
     { key: "data", label: "Data", items: groups.data },
-    { key: "handler", label: "Handlers", items: groups.handler },
+    { key: "function", label: "Functions", items: groups.function },
   ];
 
   const collapsedCats = S._collapsedSignalCats || (S._collapsedSignalCats = new Set());
@@ -1685,7 +1706,7 @@ function renderSignals(container) {
   if (entries.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No signals defined";
+    empty.textContent = "No state defined";
     container.appendChild(empty);
   }
 
@@ -1695,10 +1716,10 @@ function renderSignals(container) {
 
   const addSelect = document.createElement("select");
   addSelect.innerHTML = `
-    <option value="">+ Add signal…</option>
+    <option value="">+ Add…</option>
     <optgroup label="Signals">
       <option value="state">State Signal</option>
-      <option value="computed">Computed (JSONata)</option>
+      <option value="computed">Computed</option>
     </optgroup>
     <optgroup label="Data Sources">
       <option value="request">Fetch (Request)</option>
@@ -1711,7 +1732,7 @@ function renderSignals(container) {
       <option value="formData">FormData</option>
     </optgroup>
     <optgroup label="Logic">
-      <option value="handler">Handler</option>
+      <option value="function">Function</option>
     </optgroup>
   `;
   addSelect.onchange = () => {
@@ -1719,8 +1740,8 @@ function renderSignals(container) {
     if (!type) return;
     const template = DEF_TEMPLATES[type];
     if (!template) return;
-    const isHandler = type === "handler";
-    let nameBase = isHandler ? "newHandler" : "$newSignal";
+    const isFunction = type === "function";
+    let nameBase = isFunction ? "newFunction" : "$newSignal";
     let name = nameBase;
     let i = 1;
     while (S.document.$defs && S.document.$defs[name]) {
@@ -1980,21 +2001,82 @@ function renderSignalEditor(container, name, def) {
       defRow.appendChild(defInput);
       container.appendChild(defRow);
     }
-  } else if (cat === "handler") {
-    const info = document.createElement("div");
-    info.className = "field-row";
-    const infoLabel = document.createElement("label");
-    infoLabel.className = "field-label";
-    infoLabel.textContent = "";
-    info.appendChild(infoLabel);
-    const infoText = document.createElement("span");
-    infoText.style.fontSize = "10px";
-    infoText.style.color = "var(--fg-dim)";
-    infoText.style.fontStyle = "italic";
-    infoText.textContent = "Implementation in .js sidecar";
-    info.appendChild(infoText);
-    container.appendChild(info);
+  } else if (cat === "function") {
+    if (def.$src) {
+      // External function source
+      container.appendChild(
+        signalFieldRow("$src", def.$src || "", (v) => {
+          update(updateDef(S, name, { $src: v || undefined }));
+        }),
+      );
+      container.appendChild(
+        signalFieldRow("$export", def.$export || "", (v) => {
+          update(updateDef(S, name, { $export: v || undefined }));
+        }),
+      );
+    } else {
+      // Inline function body
+      const bodyRow = document.createElement("div");
+      bodyRow.className = "field-row";
+      const bodyLabel = document.createElement("label");
+      bodyLabel.className = "field-label";
+      bodyLabel.textContent = "body";
+      bodyRow.appendChild(bodyLabel);
+      const bodyInput = document.createElement("textarea");
+      bodyInput.className = "field-input";
+      bodyInput.style.minHeight = "60px";
+      bodyInput.style.fontFamily = "'SF Mono', 'Fira Code', 'Consolas', monospace";
+      bodyInput.style.fontSize = "11px";
+      bodyInput.value = def.body || "";
+      let debounce;
+      bodyInput.oninput = () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          update(updateDef(S, name, { body: bodyInput.value }));
+        }, 500);
+      };
+      bodyRow.appendChild(bodyInput);
+      container.appendChild(bodyRow);
+    }
 
+    // Arguments field (comma-separated)
+    const argsStr = (def.arguments || []).join(", ");
+    container.appendChild(
+      signalFieldRow("args", argsStr, (v) => {
+        const args = v ? v.split(",").map((a) => a.trim()).filter(Boolean) : [];
+        update(updateDef(S, name, { arguments: args.length > 0 ? args : undefined }));
+      }),
+    );
+
+    // Signal checkbox (reactive computed wrapper)
+    const sigRow = document.createElement("div");
+    sigRow.className = "field-row";
+    const sigLabel = document.createElement("label");
+    sigLabel.className = "field-label";
+    sigLabel.textContent = "signal";
+    sigRow.appendChild(sigLabel);
+    const sigCheck = document.createElement("input");
+    sigCheck.type = "checkbox";
+    sigCheck.className = "field-input";
+    sigCheck.checked = !!def.signal;
+    sigCheck.onchange = () => {
+      update(updateDef(S, name, { signal: sigCheck.checked || undefined }));
+    };
+    sigRow.appendChild(sigCheck);
+    container.appendChild(sigRow);
+
+    // Open in editor button
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "kv-add";
+    expandBtn.textContent = "Open in editor";
+    expandBtn.style.marginTop = "4px";
+    expandBtn.onclick = () => {
+      S = { ...S, ui: { ...S.ui, editingFunction: { type: "def", defName: name } } };
+      renderCanvas();
+    };
+    if (!def.$src) container.appendChild(expandBtn);
+
+    // Description
     container.appendChild(
       signalFieldRow("desc", def.description || "", (v) => {
         update(updateDef(S, name, { description: v || undefined }));
@@ -2032,7 +2114,7 @@ function renderRightPanel() {
   // Tabs
   const tabs = document.createElement("div");
   tabs.className = "panel-tabs";
-  for (const t of ["properties", "style", "handlers"]) {
+  for (const t of ["properties", "events", "style"]) {
     const btn = document.createElement("div");
     btn.className = `panel-tab${t === tab ? " active" : ""}`;
     btn.textContent = t;
@@ -2050,8 +2132,8 @@ function renderRightPanel() {
   rightPanel.appendChild(body);
 
   if (tab === "properties") renderInspector(body);
+  else if (tab === "events") renderEventsPanel(body);
   else if (tab === "style") renderStylePanel(body);
-  else if (tab === "handlers") renderHandlersView(body);
 
   updateForcedPseudoPreview();
 }
@@ -2180,116 +2262,6 @@ function renderInspector(container) {
       add.className = "kv-add";
       add.textContent = "+ Add breakpoint";
       add.onclick = () => update(updateMedia(S, "--bp", "(min-width: 768px)"));
-      fields.appendChild(add);
-      return fields;
-    });
-  }
-
-  // Events section (event handler bindings)
-  const defs = S.document.$defs || {};
-  const handlerDefs = Object.entries(defs).filter(([, d]) => d.$handler);
-  if (handlerDefs.length > 0 || Object.keys(defs).length > 0) {
-    renderInspectorSection(container, "Events", false, () => {
-      const fields = document.createElement("div");
-      fields.className = "inspector-fields";
-
-      // Show existing event bindings on this node
-      const eventKeys = Object.keys(node).filter(
-        (k) => k.startsWith("on") && typeof node[k] === "object" && node[k]?.$ref,
-      );
-      for (const evKey of eventKeys) {
-        const evRow = document.createElement("div");
-        evRow.className = "event-row";
-
-        const nameInput = document.createElement("select");
-        nameInput.className = "field-input event-name";
-        nameInput.innerHTML = `<option value="${evKey}">${evKey}</option>`;
-        for (const evName of [
-          "onclick",
-          "oninput",
-          "onchange",
-          "onsubmit",
-          "onkeydown",
-          "onkeyup",
-          "onfocus",
-          "onblur",
-          "onmouseenter",
-          "onmouseleave",
-        ]) {
-          if (evName !== evKey) {
-            const opt = document.createElement("option");
-            opt.value = evName;
-            opt.textContent = evName;
-            nameInput.appendChild(opt);
-          }
-        }
-        nameInput.onchange = () => {
-          let s = updateProperty(S, S.selection, evKey, undefined);
-          s = updateProperty(s, S.selection, nameInput.value, node[evKey]);
-          update(s);
-        };
-        evRow.appendChild(nameInput);
-
-        const handlerSel = document.createElement("select");
-        handlerSel.className = "field-input event-handler";
-        handlerSel.innerHTML = '<option value="">— none —</option>';
-        for (const [hName] of handlerDefs) {
-          const opt = document.createElement("option");
-          opt.value = `#/$defs/${hName}`;
-          opt.textContent = hName;
-          if (node[evKey].$ref === `#/$defs/${hName}`) opt.selected = true;
-          handlerSel.appendChild(opt);
-        }
-        // Also show non-handler signal defs (some events may bind to signals)
-        const signalDefs = Object.entries(defs).filter(([, d]) => !d.$handler);
-        if (signalDefs.length > 0) {
-          const optgroup = document.createElement("optgroup");
-          optgroup.label = "Signals";
-          for (const [sName] of signalDefs) {
-            const opt = document.createElement("option");
-            opt.value = `#/$defs/${sName}`;
-            opt.textContent = sName;
-            if (node[evKey].$ref === `#/$defs/${sName}`) opt.selected = true;
-            optgroup.appendChild(opt);
-          }
-          handlerSel.appendChild(optgroup);
-        }
-        handlerSel.onchange = () => {
-          if (handlerSel.value) {
-            update(updateProperty(S, S.selection, evKey, { $ref: handlerSel.value }));
-          } else {
-            update(updateProperty(S, S.selection, evKey, undefined));
-          }
-        };
-        evRow.appendChild(handlerSel);
-
-        const del = document.createElement("span");
-        del.className = "kv-del";
-        del.textContent = "\u2715";
-        del.onclick = () => update(updateProperty(S, S.selection, evKey, undefined));
-        evRow.appendChild(del);
-
-        fields.appendChild(evRow);
-      }
-
-      // Add event button
-      const add = document.createElement("span");
-      add.className = "kv-add";
-      add.textContent = "+ Add event";
-      add.onclick = () => {
-        // Find first handler to use as default
-        const firstHandler = handlerDefs[0];
-        const defaultRef = firstHandler ? { $ref: `#/$defs/${firstHandler[0]}` } : { $ref: "" };
-        // Find unused event name
-        let evName = "onclick";
-        for (const name of ["onclick", "oninput", "onchange", "onsubmit", "onkeydown"]) {
-          if (!node[name]) {
-            evName = name;
-            break;
-          }
-        }
-        update(updateProperty(S, S.selection, evName, defaultRef));
-      };
       fields.appendChild(add);
       return fields;
     });
@@ -3370,7 +3342,7 @@ function bindableFieldRow(label, type, rawValue, onChange, filterFn) {
     sel.innerHTML = '<option value="">— select signal —</option>';
 
     const signalDefs = Object.entries(defs).filter(([, d]) =>
-      filterFn ? filterFn(d) : !d.$handler,
+      filterFn ? filterFn(d) : !d.$handler && d.$prototype !== "Function",
     );
     for (const [defName] of signalDefs) {
       const opt = document.createElement("option");
@@ -3412,7 +3384,7 @@ function bindableFieldRow(label, type, rawValue, onChange, filterFn) {
     } else {
       // Switch to bound — pick first available signal
       const signalDefs = Object.entries(defs).filter(([, d]) =>
-        filterFn ? filterFn(d) : !d.$handler,
+        filterFn ? filterFn(d) : !d.$handler && d.$prototype !== "Function",
       );
       if (signalDefs.length > 0) {
         onChange({ $ref: `#/$defs/${signalDefs[0][0]}` });
@@ -3490,18 +3462,314 @@ function renderSourceView(container) {
   container.appendChild(ta);
 }
 
-// ─── Handlers view ────────────────────────────────────────────────────────────
+// ─── Function editor (Monaco JS mode) ─────────────────────────────────────────
 
-function renderHandlersView(container) {
-  if (S.handlersSource) {
-    const ta = document.createElement("textarea");
-    ta.id = "source-view";
-    ta.value = S.handlersSource;
-    ta.readOnly = true;
-    container.appendChild(ta);
-  } else {
-    container.innerHTML = '<div class="empty-state">No companion .js file loaded</div>';
+function renderFunctionEditor() {
+  const editing = S.ui.editingFunction;
+
+  // If editor already exists and matches current target, just sync value
+  if (functionEditor && functionEditor._editingTarget === JSON.stringify(editing)) {
+    const body = getFunctionBody(editing);
+    const currentVal = functionEditor.getValue();
+    if (currentVal !== body) {
+      functionEditor._ignoreNextChange = true;
+      functionEditor.setValue(body);
+    }
+    return;
   }
+
+  // Dispose previous editors
+  if (functionEditor) { functionEditor.dispose(); functionEditor = null; }
+  if (monacoEditor) { monacoEditor.dispose(); monacoEditor = null; }
+
+  // Clean up canvas DnD
+  for (const fn of canvasDndCleanups) fn();
+  canvasDndCleanups = [];
+  canvasPanels = [];
+
+  canvasWrap.innerHTML = "";
+  canvasWrap.style.padding = "0";
+
+  // Header bar
+  const header = document.createElement("div");
+  header.className = "function-editor-header";
+  const title = document.createElement("span");
+  title.textContent = editing.type === "def"
+    ? `Function: ${editing.defName}`
+    : `Event: ${editing.eventKey} on ${nodeLabel(getNodeAtPath(S.document, editing.path))}`;
+  header.appendChild(title);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "tb-btn";
+  closeBtn.textContent = "Close";
+  closeBtn.onclick = () => {
+    if (functionEditor) { functionEditor.dispose(); functionEditor = null; }
+    S = { ...S, ui: { ...S.ui, editingFunction: null } };
+    renderCanvas();
+  };
+  header.appendChild(closeBtn);
+  canvasWrap.appendChild(header);
+
+  // Editor container
+  const editorContainer = document.createElement("div");
+  editorContainer.className = "source-editor";
+  canvasWrap.appendChild(editorContainer);
+
+  const body = getFunctionBody(editing);
+
+  functionEditor = monaco.editor.create(editorContainer, {
+    value: body,
+    language: "javascript",
+    theme: "vs-dark",
+    automaticLayout: true,
+    minimap: { enabled: false },
+    fontSize: 12,
+    fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+    lineNumbers: "on",
+    scrollBeyondLastLine: false,
+    wordWrap: "on",
+    tabSize: 2,
+  });
+  functionEditor._editingTarget = JSON.stringify(editing);
+
+  // Debounced sync back to state
+  let debounce;
+  functionEditor.onDidChangeModelContent(() => {
+    if (functionEditor._ignoreNextChange) {
+      functionEditor._ignoreNextChange = false;
+      return;
+    }
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      const newBody = functionEditor.getValue();
+      if (editing.type === "def") {
+        update(updateDef(S, editing.defName, { body: newBody }));
+      } else if (editing.type === "event") {
+        const node = getNodeAtPath(S.document, editing.path);
+        const current = node?.[editing.eventKey] || {};
+        update(updateProperty(S, editing.path, editing.eventKey, {
+          ...current,
+          $prototype: "Function",
+          body: newBody,
+        }));
+      }
+      renderLeftPanel();
+    }, 500);
+  });
+}
+
+function getFunctionBody(editing) {
+  if (editing.type === "def") {
+    return S.document.$defs?.[editing.defName]?.body || "";
+  } else if (editing.type === "event") {
+    const node = getNodeAtPath(S.document, editing.path);
+    return node?.[editing.eventKey]?.body || "";
+  }
+  return "";
+}
+
+// Register Monaco JS completion provider for $defs scope variables (once)
+let _completionRegistered = false;
+function registerFunctionCompletions() {
+  if (_completionRegistered) return;
+  _completionRegistered = true;
+  monaco.languages.registerCompletionItemProvider("javascript", {
+    triggerCharacters: ["."],
+    provideCompletionItems(model, position) {
+      const defs = S?.document?.$defs || {};
+      const word = model.getWordUntilPosition(position);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
+
+      const suggestions = Object.entries(defs).map(([key, def]) => {
+        let kind = monaco.languages.CompletionItemKind.Variable;
+        if (def?.$prototype === "Function" || def?.$handler) kind = monaco.languages.CompletionItemKind.Function;
+        else if (def?.$prototype) kind = monaco.languages.CompletionItemKind.Property;
+        return {
+          label: `$defs.${key}`,
+          kind,
+          insertText: `$defs.${key}`,
+          range,
+        };
+      });
+      return { suggestions };
+    },
+  });
+}
+
+// ─── Events panel ─────────────────────────────────────────────────────────────
+
+const EVENT_NAMES = [
+  "onclick", "oninput", "onchange", "onsubmit", "onkeydown",
+  "onkeyup", "onfocus", "onblur", "onmouseenter", "onmouseleave",
+];
+
+function renderEventsPanel(container) {
+  if (!S.selection) {
+    container.innerHTML = '<div class="empty-state">Select an element to edit events</div>';
+    return;
+  }
+  const node = getNodeAtPath(S.document, S.selection);
+  if (!node) {
+    container.innerHTML = '<div class="empty-state">Node not found</div>';
+    return;
+  }
+
+  const defs = S.document.$defs || {};
+  const functionDefs = Object.entries(defs).filter(
+    ([, d]) => d.$prototype === "Function" || d.$handler,
+  );
+
+  const fields = document.createElement("div");
+  fields.className = "inspector-fields";
+
+  // Find existing event bindings (both $ref and inline Function)
+  const eventKeys = Object.keys(node).filter((k) => {
+    if (!k.startsWith("on")) return false;
+    const v = node[k];
+    if (!v || typeof v !== "object") return false;
+    return v.$ref || v.$prototype === "Function";
+  });
+
+  for (const evKey of eventKeys) {
+    const evVal = node[evKey];
+    const isInline = evVal.$prototype === "Function";
+
+    const evRow = document.createElement("div");
+    evRow.className = "event-row";
+    evRow.style.flexWrap = "wrap";
+
+    // Event name select
+    const nameInput = document.createElement("select");
+    nameInput.className = "field-input event-name";
+    nameInput.innerHTML = `<option value="${evKey}">${evKey}</option>`;
+    for (const evName of EVENT_NAMES) {
+      if (evName !== evKey) {
+        const opt = document.createElement("option");
+        opt.value = evName;
+        opt.textContent = evName;
+        nameInput.appendChild(opt);
+      }
+    }
+    nameInput.onchange = () => {
+      let s = updateProperty(S, S.selection, evKey, undefined);
+      s = updateProperty(s, S.selection, nameInput.value, node[evKey]);
+      update(s);
+    };
+    evRow.appendChild(nameInput);
+
+    // Mode select (inline / $ref)
+    const modeSelect = document.createElement("select");
+    modeSelect.className = "field-input";
+    modeSelect.style.width = "60px";
+    modeSelect.style.flexShrink = "0";
+    modeSelect.innerHTML = `
+      <option value="inline"${isInline ? " selected" : ""}>inline</option>
+      <option value="ref"${!isInline ? " selected" : ""}>$ref</option>
+    `;
+    modeSelect.onchange = () => {
+      if (modeSelect.value === "inline") {
+        update(updateProperty(S, S.selection, evKey, { $prototype: "Function", body: "", arguments: [] }));
+      } else {
+        const firstFn = functionDefs[0];
+        update(updateProperty(S, S.selection, evKey, firstFn ? { $ref: `#/$defs/${firstFn[0]}` } : { $ref: "" }));
+      }
+    };
+    evRow.appendChild(modeSelect);
+
+    // Delete button
+    const del = document.createElement("span");
+    del.className = "kv-del";
+    del.textContent = "\u2715";
+    del.onclick = () => update(updateProperty(S, S.selection, evKey, undefined));
+    evRow.appendChild(del);
+
+    if (isInline) {
+      // Inline mode: body textarea
+      const bodyWrap = document.createElement("div");
+      bodyWrap.style.cssText = "width: 100%; display: flex; gap: 4px; align-items: start; margin-top: 3px;";
+      const bodyTA = document.createElement("textarea");
+      bodyTA.className = "field-input";
+      bodyTA.style.minHeight = "36px";
+      bodyTA.style.fontFamily = "'SF Mono', 'Fira Code', 'Consolas', monospace";
+      bodyTA.style.fontSize = "11px";
+      bodyTA.style.flex = "1";
+      bodyTA.value = evVal.body || "";
+      let debounce;
+      bodyTA.oninput = () => {
+        clearTimeout(debounce);
+        debounce = setTimeout(() => {
+          update(updateProperty(S, S.selection, evKey, {
+            $prototype: "Function",
+            body: bodyTA.value,
+            arguments: evVal.arguments || [],
+          }));
+        }, 500);
+      };
+      bodyWrap.appendChild(bodyTA);
+
+      // Expand to editor button
+      const expandBtn = document.createElement("button");
+      expandBtn.className = "kv-add";
+      expandBtn.textContent = "↗";
+      expandBtn.title = "Open in editor";
+      expandBtn.style.padding = "2px 6px";
+      expandBtn.onclick = () => {
+        S = { ...S, ui: { ...S.ui, editingFunction: { type: "event", path: S.selection, eventKey: evKey } } };
+        renderCanvas();
+      };
+      bodyWrap.appendChild(expandBtn);
+
+      evRow.appendChild(bodyWrap);
+    } else {
+      // $ref mode: handler select
+      const handlerSel = document.createElement("select");
+      handlerSel.className = "field-input event-handler";
+      handlerSel.style.flex = "1";
+      handlerSel.innerHTML = '<option value="">— none —</option>';
+      for (const [fName] of functionDefs) {
+        const opt = document.createElement("option");
+        opt.value = `#/$defs/${fName}`;
+        opt.textContent = fName;
+        if (evVal.$ref === `#/$defs/${fName}`) opt.selected = true;
+        handlerSel.appendChild(opt);
+      }
+      handlerSel.onchange = () => {
+        if (handlerSel.value) {
+          update(updateProperty(S, S.selection, evKey, { $ref: handlerSel.value }));
+        } else {
+          update(updateProperty(S, S.selection, evKey, undefined));
+        }
+      };
+      // Insert before the delete button
+      evRow.insertBefore(handlerSel, del);
+    }
+
+    fields.appendChild(evRow);
+  }
+
+  // Add event button
+  const add = document.createElement("span");
+  add.className = "kv-add";
+  add.textContent = "+ Add event";
+  add.onclick = () => {
+    let evName = "onclick";
+    for (const name of EVENT_NAMES) {
+      if (!node[name]) { evName = name; break; }
+    }
+    if (functionDefs.length > 0) {
+      update(updateProperty(S, S.selection, evName, { $ref: `#/$defs/${functionDefs[0][0]}` }));
+    } else {
+      update(updateProperty(S, S.selection, evName, { $prototype: "Function", body: "", arguments: [] }));
+    }
+  };
+  fields.appendChild(add);
+
+  container.appendChild(fields);
 }
 
 // ─── Toolbar ──────────────────────────────────────────────────────────────────
@@ -3593,6 +3861,11 @@ function renderToolbar() {
   srcBtn.textContent = sourceMode ? "{ } Source" : "{ }";
   srcBtn.title = sourceMode ? "Switch to canvas view" : "Edit document source";
   srcBtn.onclick = () => {
+    // Close function editor if active
+    if (S.ui.editingFunction) {
+      if (functionEditor) { functionEditor.dispose(); functionEditor = null; }
+      S = { ...S, ui: { ...S.ui, editingFunction: null } };
+    }
     sourceMode = !sourceMode;
     renderCanvas();
     renderOverlays();

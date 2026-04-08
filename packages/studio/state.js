@@ -98,14 +98,15 @@ export function createState(doc) {
     mode: "component", // 'component' | 'content'
     content: { frontmatter: {} }, // frontmatter metadata for .md files
     ui: {
-      leftTab: "layers", // 'layers' | 'blocks'
-      rightTab: "properties", // 'properties' | 'source' | 'handlers'
+      leftTab: "layers", // 'layers' | 'blocks' | 'state'
+      rightTab: "properties", // 'properties' | 'events' | 'style'
       zoom: 1,
       activeMedia: null, // '--md' | null (base) — focused canvas/breakpoint
       activeSelector: null, // ':hover' | '.child' | null (base) — nested selector context
       featureToggles: {}, // { '--dark': true } — non-size media toggles
       styleSections: {}, // { layout: true, ... } — section open/closed state
       styleShorthands: {}, // { padding: true, ... } — shorthand expand/collapse state
+      editingFunction: null, // null | { type: 'def', defName } | { type: 'event', path, eventKey }
     },
   };
 }

@@ -1,16 +1,16 @@
 /**
- * jsonsx-compiler.js — Static HTML emitter + hydration island detector
- * @version 1.0.0
+ * jsonsx-compiler.js — Static HTML emitter + custom element compiler
+ * @version 2.0.0
  * @license MIT
  *
  * Usage (Node.js build step):
  *   node jsonsx-compiler.js <source.json> [output.html]
  *   node jsonsx-compiler.js todo-app.json > dist/todo-app.html
  *
- * Output tiers (§16.2 of spec):
+ * Output tiers:
  *   Fully static subtree           → plain HTML, zero JS
- *   Dynamic subtree                → <script type="application/jsonsx+json"> island
- *   timing: "server" entries       → island + generated Hono server handler
+ *   Dynamic subtree                → auto-generated custom element module
+ *   timing: "server" entries       → generated Hono server handler
  *
  * Static detection uses the five-shape $defs grammar:
  *   - Naked values / expanded signals / template strings → dynamic (signals)
@@ -20,7 +20,7 @@
  *   - timing: "server" + $src + $export (no $prototype) → dynamic (server RPC)
  *
  * The compiler has zero novel static-analysis logic for JS — it reads only JSON.
- * The JSON IS the bundle manifest (§16.5).
+ * The JSON IS the bundle manifest.
  */
 
 import $RefParser from "@apidevtools/json-schema-ref-parser";
@@ -30,46 +30,123 @@ import { camelToKebab, toCSSText, RESERVED_KEYS } from "@jsonsx/runtime";
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
 /**
- * Compile a JSONsx document to an HTML string.
+ * Compile a JSONsx document to HTML (+ optional JS module files).
+ *
+ * - Fully static documents produce a single HTML string with zero JS.
+ * - Dynamic documents are compiled as auto-generated custom elements:
+ *   the HTML page contains an import map + custom element tag, and
+ *   the JS is emitted as external .js module file(s).
  *
  * @param {string | object} sourcePath - Path to .json file, URL, or raw object
  * @param {object}          [opts]
  * @param {string}          [opts.title='JSONsx App'] - HTML document title
- * @returns {Promise<string>} Full HTML document string
+ * @param {string}          [opts.reactivitySrc] - CDN URL for @vue/reactivity
+ * @param {string}          [opts.litHtmlSrc] - CDN URL for lit-html
+ * @returns {Promise<{ html: string, files: Array<{ path: string, content: string, tagName?: string }> }>}
  *
  * @example
- * const html = await compile('./todo-app.json', { title: 'Todo App' });
- * fs.writeFileSync('dist/index.html', html);
+ * const { html, files } = await compile('./counter.json', { title: 'Counter' });
+ * writeFileSync('dist/index.html', html);
+ * for (const f of files) writeFileSync(`dist/${f.path}`, f.content);
  */
 export async function compile(sourcePath, opts = {}) {
-  const { title = "JSONsx App", reactivitySrc = "https://esm.sh/@vue/reactivity@3.5.32" } = opts;
+  const {
+    title = "JSONsx App",
+    reactivitySrc = "https://esm.sh/@vue/reactivity@3.5.32",
+    litHtmlSrc = "https://esm.sh/lit-html@3.3.0",
+  } = opts;
 
   // Dereferenced doc for static analysis (isDynamic, compileStyles, etc.)
   const doc = await $RefParser.dereference(sourcePath);
 
-  // Raw JSON preserves internal $ref pointers needed by the runtime at hydration
+  // Raw JSON preserves internal $ref pointers
   const raw =
     typeof sourcePath === "string" ? JSON.parse(readFileSync(sourcePath, "utf8")) : sourcePath;
 
-  const rootContext = createCompileContext(raw, null, raw.$defs ?? {}, raw.$media ?? {});
-  const styleBlock = compileStyles(raw, raw.$media ?? {});
-  const bodyContent = compileNode(raw, isNodeDynamic(raw), raw, rootContext);
+  const hasDynamic = isDynamic(raw);
 
-  const vueHydrationScript = hasAnyIsland(raw) ? generateVueHydration(reactivitySrc) : "";
+  if (hasDynamic) {
+    // ── Dynamic document: compile as an auto-generated custom element ──
+    const tagName = titleToTagName(title);
+    const className = tagNameToClassName(tagName);
 
-  return `<!DOCTYPE html>
+    // Ensure the raw definition has the custom element tagName for emitElementModule
+    const elementDef = { ...raw, tagName };
+
+    const moduleContent = emitElementModule(elementDef, className, []);
+    const moduleFile = { path: `${tagName}.js`, content: moduleContent, tagName };
+
+    const styleBlock = compileStyles(raw, raw.$media ?? {});
+
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "@vue/reactivity": "${reactivitySrc}",
+      "lit-html": "${litHtmlSrc}"
+    }
+  }
+  </script>
+  ${styleBlock}
+</head>
+<body>
+  <${tagName}></${tagName}>
+  <script type="module" src="./${tagName}.js"></script>
+</body>
+</html>`;
+
+    return { html, files: [moduleFile] };
+  }
+
+  // ── Fully static document (may have dynamic child subtrees) ──
+  const rootContext = createCompileContext(raw, null, raw.$defs ?? {}, raw.$media ?? {});
+  const styleBlock = compileStyles(raw, raw.$media ?? {});
+  const islands = [];
+  const bodyContent = compileNode(raw, false, raw, rootContext, islands);
+
+  // If any dynamic child subtrees were found, compile them as custom elements
+  const files = [];
+  let importMap = "";
+  let moduleScripts = "";
+  if (islands.length > 0) {
+    for (const island of islands) {
+      const moduleContent = emitElementModule(island.def, island.className, []);
+      files.push({ path: `_islands/${island.tagName}.js`, content: moduleContent, tagName: island.tagName });
+    }
+    importMap = `<script type="importmap">
+  {
+    "imports": {
+      "@vue/reactivity": "${reactivitySrc}",
+      "lit-html": "${litHtmlSrc}"
+    }
+  }
+  </script>`;
+    moduleScripts = files.map(f =>
+      `<script type="module" src="./${f.path}"></script>`
+    ).join("\n  ");
+  }
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  ${importMap}
   ${styleBlock}
 </head>
 <body>
   ${bodyContent}
-  ${vueHydrationScript}
+  ${moduleScripts}
 </body>
 </html>`;
+
+  return { html, files };
 }
 
 // ─── Server handler compilation ───────────────────────────────────────────────
@@ -120,374 +197,6 @@ ${routes}
 
 export default app
 `;
-}
-
-// ─── Vue hydration code generation ────────────────────────────────────────────
-
-/**
- * Generate a hydration script built directly on @vue/reactivity.
- *
- * @param {string} reactivitySrc - Browser-resolvable module specifier
- * @returns {string} <script type="module"> with Vue hydration code
- */
-function generateVueHydration(reactivitySrc) {
-  return `<script type="module">
-  import { reactive, computed, effect, ref } from '${reactivitySrc}';
-
-  const RESERVED_KEYS = new Set(${JSON.stringify([...RESERVED_KEYS])});
-  const SCHEMA_KEYWORDS = new Set(${JSON.stringify([...SCHEMA_KEYWORDS])});
-  const moduleCache = new Map();
-
-  const isTemplateString = (val) => typeof val === 'string' && val.includes('\${');
-  const isRefObj = (val) => val !== null && typeof val === 'object' && typeof val.$ref === 'string';
-  const cloneValue = (value) => {
-    if (value === null || typeof value !== 'object') return value;
-    return JSON.parse(JSON.stringify(value));
-  };
-
-  function getPath(base, path) {
-    if (!path) return base;
-    return path.split('/').reduce((acc, key) => acc == null ? undefined : acc[key], base);
-  }
-
-  function evaluateTemplate(str, $defs) {
-    const fn = new Function('$defs', '$map', 'return \`' + str + '\`');
-    return fn($defs, $defs?.$map);
-  }
-
-  function resolveRef(refValue, $defs) {
-    if (typeof refValue !== 'string') return refValue;
-    if (refValue.startsWith('$map/')) {
-      const parts = refValue.split('/');
-      const key = parts[1];
-      const base = $defs.$map?.[key] ?? $defs['$map/' + key];
-      return parts.length > 2 ? getPath(base, parts.slice(2).join('/')) : base;
-    }
-    if (refValue.startsWith('#/$defs/')) {
-      const sub = refValue.slice('#/$defs/'.length);
-      const slash = sub.indexOf('/');
-      if (slash < 0) return $defs[sub];
-      return getPath($defs[sub.slice(0, slash)], sub.slice(slash + 1));
-    }
-    return $defs[refValue] ?? null;
-  }
-
-  function hasSchemaKeywords(obj) {
-    for (const key of Object.keys(obj)) {
-      if (SCHEMA_KEYWORDS.has(key)) return true;
-    }
-    return false;
-  }
-
-  async function resolveFunction(def, $defs, key, baseUrl) {
-    if (def.body && def.$src) {
-      throw new Error('JSONsx: ' + key + ' declares both body and $src');
-    }
-    if (!def.body && !def.$src) {
-      throw new Error('JSONsx: ' + key + ' is a Function prototype with no body or $src');
-    }
-
-    let fn;
-    if (def.body) {
-      const args = def.arguments ?? [];
-      fn = new Function('$defs', ...args, def.body);
-    } else {
-      const href = new URL(def.$src, baseUrl).href;
-      let mod = moduleCache.get(href);
-      if (!mod) {
-        mod = await import(href);
-        moduleCache.set(href, mod);
-      }
-      const exportName = def.$export ?? key;
-      fn = mod[exportName] ?? mod.default?.[exportName];
-      if (typeof fn !== 'function') {
-        throw new Error('JSONsx: export "' + exportName + '" not found in "' + def.$src + '"');
-      }
-    }
-
-    if (def.signal) {
-      return computed(() => fn($defs));
-    }
-
-    return fn;
-  }
-
-  async function resolvePrototype(def, $defs, key, baseUrl) {
-    if (def.$src) {
-      return resolveFunction({ ...def, $prototype: 'Function' }, $defs, key, baseUrl);
-    }
-
-    switch (def.$prototype) {
-      case 'Request': {
-        const state = ref(def.default ?? null);
-        if (!def.manual && def.url) {
-          effect(() => {
-            const url = isTemplateString(def.url) ? evaluateTemplate(def.url, $defs) : def.url;
-            if (!url) return;
-            fetch(url, {
-              method: def.method ?? 'GET',
-              ...(def.headers ? { headers: def.headers } : {}),
-              ...(def.body ? { body: typeof def.body === 'object' ? JSON.stringify(def.body) : def.body } : {}),
-            })
-              .then((response) => response.ok ? response.json() : Promise.reject(new Error(response.statusText)))
-              .then((data) => { state.value = data; })
-              .catch((error) => { state.value = { error: String(error) }; });
-          });
-        }
-        return state;
-      }
-      case 'LocalStorage':
-      case 'SessionStorage': {
-        const store = def.$prototype === 'LocalStorage' ? localStorage : sessionStorage;
-        const storageKey = def.key ?? key;
-        let initialValue = def.default ?? null;
-        try {
-          const stored = store.getItem(storageKey);
-          if (stored !== null) initialValue = JSON.parse(stored);
-        } catch {}
-        const state = ref(initialValue);
-        effect(() => {
-          try {
-            store.setItem(storageKey, JSON.stringify(state.value));
-          } catch {}
-        });
-        return state;
-      }
-      default:
-        return null;
-    }
-  }
-
-  async function buildScope(defs, doc, baseUrl) {
-    const raw = {};
-    for (const [key, def] of Object.entries(defs)) {
-      if (typeof def !== 'object' || def === null || Array.isArray(def)) {
-        raw[key] = cloneValue(def);
-      } else if ('$prototype' in def) {
-        if ('default' in def) raw[key] = cloneValue(def.default);
-      } else if ('default' in def) {
-        raw[key] = cloneValue(def.default);
-      } else if (isSchemaOnlyRuntime(def)) {
-        // Pure type definition: no runtime slot.
-      } else {
-        raw[key] = cloneValue(def);
-      }
-    }
-
-    const $defs = reactive(raw);
-
-    for (const [key, def] of Object.entries(defs)) {
-      if (typeof def === 'string' && isTemplateString(def)) {
-        $defs[key] = computed(() => evaluateTemplate(def, $defs));
-      }
-    }
-
-    for (const [key, def] of Object.entries(defs)) {
-      if (def && typeof def === 'object' && def.$prototype === 'Function') {
-        $defs[key] = await resolveFunction(def, $defs, key, baseUrl);
-      }
-    }
-
-    for (const [key, def] of Object.entries(defs)) {
-      if (def && typeof def === 'object' && def.$prototype && def.$prototype !== 'Function') {
-        $defs[key] = await resolvePrototype(def, $defs, key, baseUrl);
-      }
-    }
-
-    if (doc.$media) $defs.$media = doc.$media;
-    return $defs;
-  }
-
-  function isSchemaOnlyRuntime(obj) {
-    return !('$prototype' in obj) && !('default' in obj) && hasSchemaKeywords(obj);
-  }
-
-  function bindProperty(el, key, value, $defs) {
-    if (isRefObj(value)) {
-      if (key === 'id') {
-        el[key] = resolveRef(value.$ref, $defs);
-        return;
-      }
-      effect(() => {
-        el[key] = resolveRef(value.$ref, $defs);
-      });
-      return;
-    }
-    if (isTemplateString(value)) {
-      effect(() => {
-        el[key] = evaluateTemplate(value, $defs);
-      });
-      return;
-    }
-    if (value !== undefined) {
-      el[key] = value;
-    }
-  }
-
-  function applyProperties(el, def, $defs) {
-    for (const [key, value] of Object.entries(def)) {
-      if (RESERVED_KEYS.has(key) || key.startsWith('$')) continue;
-      if (key.startsWith('on') && isRefObj(value)) {
-        const handler = resolveRef(value.$ref, $defs);
-        if (typeof handler === 'function') {
-          el.addEventListener(key.slice(2), (event) => handler($defs, event));
-        }
-        continue;
-      }
-      bindProperty(el, key, value, $defs);
-    }
-  }
-
-  function isNestedSelector(prop) {
-    return prop.startsWith(':') || prop.startsWith('.') || prop.startsWith('&') || prop.startsWith('[');
-  }
-
-  function applyStyle(el, styleDef, mediaQueries = {}, $defs = {}) {
-    const nested = {};
-    const media = {};
-
-    for (const [prop, value] of Object.entries(styleDef)) {
-      if (prop.startsWith('@')) {
-        media[prop] = value;
-      } else if (isNestedSelector(prop)) {
-        nested[prop] = value;
-      } else if (isTemplateString(value)) {
-        effect(() => {
-          el.style[prop] = evaluateTemplate(value, $defs);
-        });
-      } else if (value !== null && typeof value !== 'object') {
-        el.style[prop] = value;
-      }
-    }
-
-    if (Object.keys(nested).length === 0 && Object.keys(media).length === 0) return;
-
-    const uid = 'jsonsx-' + Math.random().toString(36).slice(2, 7);
-    el.dataset.jsonsx = uid;
-    let css = '';
-
-    for (const [selector, rules] of Object.entries(nested)) {
-      const resolved = selector.startsWith('&')
-        ? selector.replace('&', '[data-jsonsx="' + uid + '"]')
-        : selector.startsWith('[')
-          ? '[data-jsonsx="' + uid + '"]' + selector
-          : '[data-jsonsx="' + uid + '"] ' + selector;
-      css += resolved + ' { ' + toCssText(rules) + ' }\n';
-    }
-
-    for (const [key, rules] of Object.entries(media)) {
-      const query = key.startsWith('@--') ? mediaQueries[key.slice(1)] ?? key.slice(1) : key.slice(1);
-      css += '@media ' + query + ' { [data-jsonsx="' + uid + '"] { ' + toCssText(rules) + ' } }\n';
-    }
-
-    const styleTag = document.createElement('style');
-    styleTag.textContent = css;
-    document.head.appendChild(styleTag);
-  }
-
-  function toCssText(rules) {
-    return Object.entries(rules)
-      .filter(([, value]) => value !== null && typeof value !== 'object')
-      .map(([key, value]) => key.replace(/[A-Z]/g, (match) => '-' + match.toLowerCase()) + ': ' + value)
-      .join('; ');
-  }
-
-  function applyAttributes(el, attrs, $defs) {
-    for (const [key, value] of Object.entries(attrs)) {
-      if (isRefObj(value)) {
-        effect(() => el.setAttribute(key, String(resolveRef(value.$ref, $defs) ?? '')));
-      } else if (isTemplateString(value)) {
-        effect(() => el.setAttribute(key, String(evaluateTemplate(value, $defs))));
-      } else if (value !== null && typeof value !== 'object') {
-        el.setAttribute(key, String(value));
-      }
-    }
-  }
-
-  function renderMappedArray(def, $defs) {
-    const container = document.createElement(def.tagName ?? 'div');
-    applyProperties(container, def, $defs);
-    applyStyle(container, def.style ?? {}, $defs.$media ?? {}, $defs);
-    applyAttributes(container, def.attributes ?? {}, $defs);
-
-    const { items: itemsSource, map: mapDef, filter: filterRef, sort: sortRef } = def.children;
-    effect(() => {
-      container.innerHTML = '';
-      let items = isRefObj(itemsSource) ? resolveRef(itemsSource.$ref, $defs) : itemsSource;
-      if (!Array.isArray(items)) return;
-      if (filterRef) {
-        const filterFn = resolveRef(filterRef.$ref, $defs);
-        if (typeof filterFn === 'function') items = items.filter(filterFn);
-      }
-      if (sortRef) {
-        const sortFn = resolveRef(sortRef.$ref, $defs);
-        if (typeof sortFn === 'function') items = [...items].sort(sortFn);
-      }
-      items.forEach((item, index) => {
-        const childScope = Object.create($defs);
-        childScope.$map = { item, index };
-        childScope['$map/item'] = item;
-        childScope['$map/index'] = index;
-        container.appendChild(renderNode(mapDef, childScope));
-      });
-    });
-
-    return container;
-  }
-
-  function renderSwitch(def, $defs) {
-    const container = document.createElement(def.tagName ?? 'div');
-    applyProperties(container, def, $defs);
-    applyStyle(container, def.style ?? {}, $defs.$media ?? {}, $defs);
-    applyAttributes(container, def.attributes ?? {}, $defs);
-    effect(() => {
-      container.innerHTML = '';
-      const active = isRefObj(def.$switch) ? resolveRef(def.$switch.$ref, $defs) : def.$switch;
-      const caseDef = def.cases?.[active] ?? def.default;
-      if (caseDef) container.appendChild(renderNode(caseDef, $defs));
-    });
-    return container;
-  }
-
-  function renderNode(def, $defs) {
-    if (def.$switch) return renderSwitch(def, $defs);
-    if (def.children?.$prototype === 'Array') return renderMappedArray(def, $defs);
-
-    const el = document.createElement(def.tagName ?? 'div');
-    applyProperties(el, def, $defs);
-    applyStyle(el, def.style ?? {}, $defs.$media ?? {}, $defs);
-    applyAttributes(el, def.attributes ?? {}, $defs);
-
-    const children = Array.isArray(def.children) ? def.children : [];
-    for (const child of children) {
-      el.appendChild(renderNode(child, $defs));
-    }
-
-    return el;
-  }
-
-  async function hydrateIsland(el) {
-    const descriptor = el.querySelector('script[type="application/jsonsx+json"]');
-    if (!descriptor) return;
-
-    const doc = JSON.parse(descriptor.textContent);
-    descriptor.remove();
-
-    const $defs = await buildScope(doc.$defs ?? {}, doc, new URL(location.href));
-    const rendered = renderNode(doc, $defs);
-
-    for (const attr of [...rendered.attributes]) {
-      if (!el.hasAttribute(attr.name) || attr.name !== 'data-jsonsx-island') {
-        el.setAttribute(attr.name, attr.value);
-      }
-    }
-    el.replaceChildren(...rendered.childNodes);
-  }
-
-  document.querySelectorAll('[data-jsonsx-island]').forEach((island) => {
-    hydrateIsland(island).catch((error) => console.error('JSONsx hydrate:', error));
-  });
-</script>`;
 }
 
 // ─── Static detection (§16.1) ─────────────────────────────────────────────────
@@ -667,7 +376,7 @@ function hasAnyIsland(def) {
  * @param {object}  [raw]   - Raw definition with $ref pointers preserved (for island embedding)
  * @returns {string} HTML string
  */
-function compileNode(def, dynamic, raw, context) {
+function compileNode(def, dynamic, raw, context, islands = []) {
   const nextContext = createCompileContext(
     raw,
     context.scope,
@@ -676,18 +385,18 @@ function compileNode(def, dynamic, raw, context) {
   );
 
   if (dynamic) {
-    const tag = def.tagName ?? "div";
-    const attrs = buildAttrs(def, nextContext.scope);
-    const inner = buildSnapshotInner(def, raw, nextContext);
-    const descriptor = buildIslandDescriptor(raw ?? def, nextContext);
-    return `<${tag} data-jsonsx-island${attrs}>${inner}
-  <script type="application/jsonsx+json">${serializeForScript(descriptor)}</script>
-</${tag}>`;
+    // Compile dynamic subtree as an auto-generated custom element
+    const n = islands.length;
+    const tagName = `jsonsx-island-${n}`;
+    const className = `JsonsxIsland${n}`;
+    const elementDef = { ...(raw ?? def), tagName };
+    islands.push({ def: elementDef, tagName, className });
+    return `<${tagName}></${tagName}>`;
   }
 
   const tag = def.tagName ?? "div";
   const attrs = buildAttrs(def, nextContext.scope);
-  const inner = buildInner(def, raw, nextContext);
+  const inner = buildInner(def, raw, nextContext, islands);
 
   return `<${tag}${attrs}>${inner}</${tag}>`;
 }
@@ -765,7 +474,7 @@ function buildAttrs(def, scope) {
  * @param {object} [raw] - Raw definition with $ref pointers preserved
  * @returns {string}
  */
-function buildInner(def, raw, context) {
+function buildInner(def, raw, context, islands = []) {
   const source = raw ?? def;
 
   if (source.textContent !== undefined) {
@@ -780,79 +489,13 @@ function buildInner(def, raw, context) {
         const childDynamic = isNodeDynamic(c);
         const childRaw = rawChildren?.[i] ?? c;
         if (childDynamic) {
-          return compileNode(c, true, childRaw, context);
+          return compileNode(c, true, childRaw, context, islands);
         }
-        return compileNode(c, false, childRaw, context);
+        return compileNode(c, false, childRaw, context, islands);
       })
       .join("\n  ");
   }
   return "";
-}
-
-function buildSnapshotInner(def, raw, context) {
-  const source = raw ?? def;
-
-  if (source.textContent !== undefined) {
-    const value = resolveStaticValue(source.textContent, context.scope);
-    return value == null ? "" : escapeHtml(String(value));
-  }
-  if (source.innerHTML) return resolveStaticValue(source.innerHTML, context.scope) ?? "";
-  if (source.$switch) {
-    const active = resolveStaticValue(source.$switch, context.scope);
-    const caseDef = source.cases?.[active] ?? source.default;
-    return caseDef ? renderSnapshotNode(caseDef, caseDef, context) : "";
-  }
-  if (source.children?.$prototype === "Array") {
-    return renderSnapshotMappedChildren(source.children, context);
-  }
-  if (Array.isArray(source.children)) {
-    const rawChildren = raw?.children;
-    return source.children
-      .map((child, index) => renderSnapshotNode(child, rawChildren?.[index] ?? child, context))
-      .join("\n  ");
-  }
-  return "";
-}
-
-function renderSnapshotNode(def, raw, context) {
-  const nextContext = createCompileContext(
-    raw,
-    context.scope,
-    raw?.$defs ?? context.scopeDefs,
-    raw?.$media ?? context.media,
-  );
-  const tag = def.tagName ?? "div";
-  const attrs = buildAttrs(def, nextContext.scope);
-  const inner = buildSnapshotInner(def, raw, nextContext);
-  return `<${tag}${attrs}>${inner}</${tag}>`;
-}
-
-function renderSnapshotMappedChildren(arrayDef, context) {
-  let items = resolveStaticValue(arrayDef.items, context.scope);
-  if (!Array.isArray(items)) return "";
-
-  if (arrayDef.filter?.$ref) {
-    const filterFn = resolveRefValue(arrayDef.filter.$ref, context.scope);
-    if (typeof filterFn === "function") items = items.filter(filterFn);
-  }
-
-  if (arrayDef.sort?.$ref) {
-    const sortFn = resolveRefValue(arrayDef.sort.$ref, context.scope);
-    if (typeof sortFn === "function") items = [...items].sort(sortFn);
-  }
-
-  return items
-    .map((item, index) => {
-      const mapScope = Object.create(context.scope ?? null);
-      mapScope.$map = { item, index };
-      mapScope["$map/item"] = item;
-      mapScope["$map/index"] = index;
-      return renderSnapshotNode(arrayDef.map, arrayDef.map, {
-        ...context,
-        scope: mapScope,
-      });
-    })
-    .join("\n  ");
 }
 
 // ─── Style extraction (§16.4) ─────────────────────────────────────────────────
@@ -991,20 +634,6 @@ function defineLazyScopeValue(scope, key, getter) {
   });
 }
 
-function buildIslandDescriptor(raw, context) {
-  const descriptor =
-    raw && typeof raw === "object" ? JSON.parse(JSON.stringify(raw)) : { tagName: "div" };
-
-  if (!descriptor.$defs && context.scopeDefs && Object.keys(context.scopeDefs).length > 0) {
-    descriptor.$defs = context.scopeDefs;
-  }
-  if (!descriptor.$media && context.media && Object.keys(context.media).length > 0) {
-    descriptor.$media = context.media;
-  }
-
-  return descriptor;
-}
-
 function resolveStaticValue(value, scope) {
   if (isRefObject(value)) return resolveRefValue(value.$ref, scope);
   if (isTemplateString(value)) return evaluateStaticTemplate(value, scope);
@@ -1045,10 +674,6 @@ function getPathValue(base, path) {
 function cloneValue(value) {
   if (value === null || typeof value !== "object") return value;
   return JSON.parse(JSON.stringify(value));
-}
-
-function serializeForScript(value) {
-  return JSON.stringify(value, null, 2).replace(/<\/(script)/gi, "<\\/$1");
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -1263,6 +888,19 @@ export async function compileElementPage(sourcePath, opts = {}) {
 }
 
 // ─── Element code generation helpers ──────────────────────────────────────────
+
+/**
+ * Convert a page title to a valid custom element tag name.
+ * Custom element names must contain a hyphen and be lowercase.
+ */
+function titleToTagName(title) {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  // Ensure it contains a hyphen (required for custom elements)
+  return slug.includes("-") ? slug : `jsonsx-${slug}`;
+}
 
 function tagNameToClassName(tagName) {
   return tagName
@@ -1660,13 +1298,21 @@ if (process.argv[2]) {
   const [, , src, out] = process.argv;
 
   Promise.all([compile(src), compileServer(src)])
-    .then(async ([html, server]) => {
-      const { writeFileSync } = await import("node:fs");
+    .then(async ([result, server]) => {
+      const { writeFileSync, mkdirSync } = await import("node:fs");
+      const { dirname, join } = await import("node:path");
       if (out) {
-        writeFileSync(out, html, "utf8");
+        writeFileSync(out, result.html, "utf8");
         console.error(`Written to ${out}`);
+        const outDir = dirname(out);
+        for (const f of result.files) {
+          const filePath = join(outDir, f.path);
+          mkdirSync(dirname(filePath), { recursive: true });
+          writeFileSync(filePath, f.content, "utf8");
+          console.error(`Written to ${filePath}`);
+        }
       } else {
-        process.stdout.write(html);
+        process.stdout.write(result.html);
       }
       if (server && out) {
         const serverOut = out.replace(/(\.[^.]+)?$/, "-server.js");

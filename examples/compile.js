@@ -156,14 +156,24 @@ for (const ex of examples) {
   try {
     const raw = JSON.parse(readFileSync(ex.src, 'utf8'));
     const { doc, copies } = rewriteClientModules(ex, raw);
-    const [html, server] = await Promise.all([
+    const [result, server] = await Promise.all([
       compile(doc, { title: ex.title }),
       compileServer(ex.src),
     ]);
 
     mkdirSync(dirname(ex.out), { recursive: true });
-    writeFileSync(ex.out, html, 'utf8');
+    writeFileSync(ex.out, result.html, 'utf8');
     console.log(`✓  ${ex.name.padEnd(12)} → ${ex.out.replace(__dir + '/', '')}`);
+
+    // Write companion JS module files (auto-generated custom elements)
+    const outDir = dirname(ex.out);
+    for (const f of result.files) {
+      const filePath = resolve(outDir, f.path);
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, f.content, 'utf8');
+      console.log(`   ${''.padEnd(12)}   ${relative(__dir, filePath)}  (${f.tagName})`);
+    }
+
     copyClientModules(copies);
 
     if (server) {
